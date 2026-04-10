@@ -25,16 +25,28 @@ Extract the following details and strictly format your output as a JSON object:
 Return ONLY the raw JSON object. Do not wrap in markdown tags like \`\`\`json.
 `;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash", 
-    contents: [
-      { text: prompt },
-      { inlineData: { mimeType: "application/pdf", data: base64Data } }
-    ],
-    config: {
-      responseMimeType: "application/json"
-    }
-  });
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: prompt },
+            { inlineData: { mimeType: "application/pdf", data: base64Data } }
+          ]
+        }
+      ],
+      config: {
+        responseMimeType: "application/json"
+      }
+    });
 
-  return JSON.parse(response.text);
+    const text = response.text;
+    console.log("AI Raw Response (first 200 chars):", text?.substring(0, 200));
+    return JSON.parse(text);
+  } catch (err) {
+    console.error("Gemini API Error:", err.message || err);
+    throw new Error(`Gemini API failed: ${err.message}`);
+  }
 };

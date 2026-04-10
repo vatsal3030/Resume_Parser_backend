@@ -35,8 +35,11 @@ export const uploadResume = async (req, res) => {
     res.status(201).json(resume);
 
   } catch (err) {
-    console.error("Analysis Error:", err);
-    res.status(500).json({ error: 'Server Error during analysis' });
+    console.error("=== UPLOAD ERROR ===");
+    console.error("Error name:", err.name);
+    console.error("Error message:", err.message);
+    if (err.stack) console.error("Stack:", err.stack.split('\n').slice(0, 5).join('\n'));
+    res.status(500).json({ error: err.message || 'Server Error during analysis' });
   }
 };
 

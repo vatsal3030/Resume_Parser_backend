@@ -1,0 +1,33 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Resume {
+  id              String   @id @default(uuid())
+  userId          String   @map("user_id") // References Supabase auth.users(id)
+  originalName    String   @map("original_name")
+  
+  candidateName   String?  @map("candidate_name")
+  email           String?
+  phone           String?
+  linkedin        String?
+  github          String?
+  
+  atsScore        Int?     @default(0) @map("ats_score")
+  jobFitScore     Int?     @default(0) @map("job_fit_score")
+  summary         String?  @db.Text
+  strengths       Json?
+  weaknesses      Json?
+  suggestions     Json?
+  
+  recommendedDoc  String?  @db.Text @map("recommended_doc")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@map("resumes")
+}

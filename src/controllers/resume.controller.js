@@ -1,5 +1,8 @@
 import { extractDetailsFromPDF } from '../services/ai.service.js';
 import prisma from '../config/db.js';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const pdfParse = require('pdf-parse');
 
 export const uploadResume = async (req, res) => {
   if (!req.file) {
@@ -7,10 +10,12 @@ export const uploadResume = async (req, res) => {
   }
 
   try {
-    const base64Data = req.file.buffer.toString('base64');
-    
-    // 1. Get parsed JSON from AI
-    const aiData = await extractDetailsFromPDF(base64Data);
+    // 1. Extract raw text from the PDF Buffer instead of converting to base64
+    const pdfData = await pdfParse(req.file.buffer);
+    const resumeText = pdfData.text;
+
+    // 2. Get parsed JSON from AI using only the extracted text
+    const aiData = await extractDetailsFromPDF(resumeText);
 
     // 2. Save into Prisma
     const resume = await prisma.resume.create({
@@ -38,8 +43,23 @@ export const uploadResume = async (req, res) => {
     console.error("=== UPLOAD ERROR ===");
     console.error("Error name:", err.name);
     console.error("Error message:", err.message);
-    if (err.stack) console.error("Stack:", err.stack.split('\n').slice(0, 5).join('\n'));
-    res.status(500).json({ error: err.message || 'Server Error during analysis' });
+
+    // Friendly message for Gemini overload / quota
+    const isOverload = err.message?.includes('503') || err.message?.includes('UNAVAILABLE') || err.message?.includes('high demand');
+    const isQuotaExhausted = err.message?.includes('429') || err.message?.includes('quota') || err.message?.includes('RESOURCE_EXHAUSTED');
+
+    let friendlyMsg = err.message || 'Server Error during analysis';
+    let status = 500;
+
+    if (isQuotaExhausted) {
+      friendlyMsg = 'The AI service has reached its request limit (quota exceeded). Please try again in a few minutes.';
+      status = 429;
+    } else if (isOverload) {
+      friendlyMsg = 'Gemini AI is temporarily overloaded. Please wait a moment and try again.';
+      status = 503;
+    }
+
+    res.status(status).json({ error: friendlyMsg });
   }
 };
 
@@ -48,12 +68,12 @@ export const getResumes = async (req, res) => {
     const resumes = await prisma.resume.findMany({
       where: { userId: req.user.id },
       select: {
-          id: true,
-          originalName: true,
-          atsScore: true,
-          jobFitScore: true,
-          candidateName: true,
-          createdAt: true
+        id: true,
+        originalName: true,
+        atsScore: true,
+        jobFitScore: true,
+        candidateName: true,
+        createdAt: true
       },
       orderBy: { createdAt: 'desc' }
     });

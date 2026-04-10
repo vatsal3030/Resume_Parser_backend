@@ -4,7 +4,7 @@ const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY
 });
 
-export const extractDetailsFromPDF = async (base64Data) => {
+export const extractDetailsFromPDF = async (resumeText) => {
   const prompt = `
 You are an expert technical recruiter and resume reviewer.
 Analyze the provided resume document.
@@ -23,30 +23,22 @@ Extract the following details and strictly format your output as a JSON object:
 12. "recommendedDoc": A comprehensive markdown string representing an improved, reorganized version of their resume based on your suggestions. Make it look professional.
 
 Return ONLY the raw JSON object. Do not wrap in markdown tags like \`\`\`json.
+
+Here is the extracted text from the resume:
+${resumeText}
 `;
 
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { text: prompt },
-            { inlineData: { mimeType: "application/pdf", data: base64Data } }
-          ]
-        }
-      ],
-      config: {
-        responseMimeType: "application/json"
-      }
-    });
+  console.log("Calling Gemini API, text length:", resumeText.length);
 
-    const text = response.text;
-    console.log("AI Raw Response (first 200 chars):", text?.substring(0, 200));
-    return JSON.parse(text);
-  } catch (err) {
-    console.error("Gemini API Error:", err.message || err);
-    throw new Error(`Gemini API failed: ${err.message}`);
-  }
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json"
+    }
+  });
+
+  const text = response.text;
+  console.log(`✅ gemini-2.5-flash responded, length: ${text?.length}`);
+  return JSON.parse(text);
 };

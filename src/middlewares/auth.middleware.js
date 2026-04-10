@@ -11,7 +11,8 @@ export const protect = async (req, res, next) => {
   }
 
   if (!token) {
-    return res.status(401).json({ error: 'Not authorized, no token' });
+    console.error('Auth Middleware Error: Token entirely missing from headers');
+    return res.status(401).json({ error: 'Not authorized, token missing in request' });
   }
 
   try {
@@ -25,6 +26,7 @@ export const protect = async (req, res, next) => {
     req.user = { id: user.id, email: user.email };
     next();
   } catch (err) {
+    console.error('Auth Middleware Error:', err.message);
     return res.status(401).json({ error: 'Not authorized, token failed' });
   }
 };

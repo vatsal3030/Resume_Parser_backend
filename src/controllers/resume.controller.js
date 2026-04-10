@@ -10,8 +10,27 @@ export const uploadResume = async (req, res) => {
   }
 
   try {
-    // 1. Extract raw text from the PDF Buffer instead of converting to base64
-    const pdfData = await pdfParse(req.file.buffer);
+    // 1. Extract raw text from the PDF Buffer along with embedded hyperlinks
+    const render_page = async (pageData) => {
+      const render_options = { normalizeWhitespace: false, disableCombineTextItems: false };
+      const textContent = await pageData.getTextContent(render_options);
+      let text = textContent.items.map(item => item.str).join(' ');
+      
+      try {
+        const annotations = await pageData.getAnnotations();
+        const links = annotations
+          .filter(a => a.subtype === 'Link' && a.url)
+          .map(a => a.url);
+        if (links.length > 0) {
+          text += '\n\n[Embedded Links to Socials/Portfolios: ' + links.join(', ') + ']\n\n';
+        }
+      } catch (err) {
+        console.error("Link extraction error:", err);
+      }
+      return text;
+    };
+
+    const pdfData = await pdfParse(req.file.buffer, { pagerender: render_page });
     const resumeText = pdfData.text;
 
     // 2. Get parsed JSON from AI using only the extracted text

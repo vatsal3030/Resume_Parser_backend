@@ -2,7 +2,17 @@ import express from 'express';
 import cors from 'cors';
 import { API_PREFIX } from './constants.js';
 import resumeRoutes from './routes/resume.routes.js';
+import userRoutes from './routes/user.routes.js';
+import paymentRoutes from './routes/payment.routes.js';
+import careerRoutes from './routes/career.routes.js';
+import trackerRoutes from './routes/tracker.routes.js';
+import chatRoutes from './routes/chat.routes.js';
+import communityRoutes from './routes/community.routes.js';
+import recruiterRoutes from './routes/recruiter.routes.js';
+import extensionRoutes from './routes/extension.routes.js';
 import prisma from './config/db.js';
+import { globalErrorHandler } from './middlewares/error.middleware.js';
+import { standardRateLimiter } from './middlewares/rateLimit.middleware.js';
 
 const app = express();
 
@@ -15,7 +25,8 @@ const allowedOrigins = [
 app.use(cors({
   origin: (origin, callback) => {
     // Allow requests with no origin (mobile apps, curl, etc.) in dev
-    if (!origin || allowedOrigins.some(allowed => origin.startsWith(allowed))) {
+    // BUG FIX: Also allow chrome-extension:// origins for the browser extension
+    if (!origin || allowedOrigins.some(allowed => origin.startsWith(allowed)) || origin.startsWith('chrome-extension://')) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
@@ -25,22 +36,31 @@ app.use(cors({
 }));
 
 app.use(express.json());
+app.use(standardRateLimiter);
 
 // Routes
 app.use(`${API_PREFIX}/resumes`, resumeRoutes);
+app.use(`${API_PREFIX}/users`, userRoutes);
+app.use(`${API_PREFIX}/payments`, paymentRoutes);
+app.use(`${API_PREFIX}/career`, careerRoutes);
+app.use(`${API_PREFIX}/tracker`, trackerRoutes);
+app.use(`${API_PREFIX}/chat`, chatRoutes);
+app.use(`${API_PREFIX}/community`, communityRoutes);
+app.use(`${API_PREFIX}/recruiter`, recruiterRoutes);
+app.use(`${API_PREFIX}/extension`, extensionRoutes);
 
 app.get('/', (req, res) => {
   res.send('API is running...');
 });
 
-// Health check endpoint — pings DB to keep Supabase + Render alive
+// Health check endpoint
 app.get('/api/health', async (req, res) => {
   try {
-    const count = await prisma.resume.count();
+    const count = await prisma.document.count(); // Updated from resume.count() to document.count()
     res.status(200).json({
       status: 'ok',
       db: 'connected',
-      resumeCount: count,
+      docCount: count,
       timestamp: new Date().toISOString(),
     });
   } catch (err) {
@@ -52,5 +72,7 @@ app.get('/api/health', async (req, res) => {
     });
   }
 });
+
+app.use(globalErrorHandler);
 
 export default app;

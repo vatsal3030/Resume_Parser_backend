@@ -1,5 +1,6 @@
-import { extractDetailsFromPDF } from '../services/ai.service.js';
 import prisma from '../config/db.js';
+import logger from '../config/logger.js';
+import { enqueueAIJob } from '../queues/ai.queue.js';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const pdfParse = require('pdf-parse');
@@ -10,7 +11,20 @@ export const uploadResume = async (req, res) => {
   }
 
   try {
-    // 1. Extract raw text from the PDF Buffer along with embedded hyperlinks
+    const userId = req.user.id;
+    
+    // Ensure User exists in our DB, if not create them (lazy sync with Supabase auth)
+    let user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          id: userId,
+          email: req.user.email || 'unknown@example.com',
+        }
+      });
+    }
+
+    // 1. Extract raw text from the PDF Buffer
     const render_page = async (pageData) => {
       const render_options = { normalizeWhitespace: false, disableCombineTextItems: false };
       const textContent = await pageData.getTextContent(render_options);
@@ -22,10 +36,10 @@ export const uploadResume = async (req, res) => {
           .filter(a => a.subtype === 'Link' && a.url)
           .map(a => a.url);
         if (links.length > 0) {
-          text += '\n\n[Embedded Links to Socials/Portfolios: ' + links.join(', ') + ']\n\n';
+          text += '\n\n[Links: ' + links.join(', ') + ']\n\n';
         }
       } catch (err) {
-        console.error("Link extraction error:", err);
+        logger.error({ err }, "Link extraction error");
       }
       return text;
     };
@@ -33,70 +47,57 @@ export const uploadResume = async (req, res) => {
     const pdfData = await pdfParse(req.file.buffer, { pagerender: render_page });
     const resumeText = pdfData.text;
 
-    // 2. Get parsed JSON from AI using only the extracted text
-    const aiData = await extractDetailsFromPDF(resumeText);
-
-    // 2. Save into Prisma
-    const resume = await prisma.resume.create({
+    // 2. Create the AI Job record in the database
+    const aiJob = await prisma.aIJob.create({
       data: {
-        userId: req.user.id,
-        originalName: req.file.originalname,
-        candidateName: aiData.candidateName,
-        email: aiData.email,
-        phone: aiData.phone,
-        linkedin: aiData.linkedin,
-        github: aiData.github,
-        atsScore: aiData.atsScore,
-        jobFitScore: aiData.jobFitScore,
-        summary: aiData.summary,
-        strengths: aiData.strengths || [],
-        weaknesses: aiData.weaknesses || [],
-        suggestions: aiData.suggestions || [],
-        recommendedDoc: aiData.recommendedDoc
+        userId: user.id,
+        type: 'PARSE_RESUME',
+        status: 'PENDING',
+        inputPayload: {
+          originalName: req.file.originalname,
+          modelId: req.body.modelId || null
+        },
+        creditsCost: 10
       }
     });
 
-    res.status(201).json(resume);
+    // 3. Enqueue the background task
+    await enqueueAIJob(aiJob.id, 'PARSE_RESUME', {
+      jobId: aiJob.id,
+      userId: user.id,
+      originalName: req.file.originalname,
+      resumeText: resumeText
+    });
+
+    logger.info({ jobId: aiJob.id, userId: user.id }, 'Resume queued for processing');
+
+    // 4. Respond immediately
+    res.status(202).json({
+      message: 'Resume queued for AI analysis',
+      jobId: aiJob.id,
+      status: 'PENDING'
+    });
 
   } catch (err) {
-    console.error("=== UPLOAD ERROR ===");
-    console.error("Error name:", err.name);
-    console.error("Error message:", err.message);
-
-    // Friendly message for Gemini overload / quota
-    const isOverload = err.message?.includes('503') || err.message?.includes('UNAVAILABLE') || err.message?.includes('high demand');
-    const isQuotaExhausted = err.message?.includes('429') || err.message?.includes('quota') || err.message?.includes('RESOURCE_EXHAUSTED');
-
-    let friendlyMsg = err.message || 'Server Error during analysis';
-    let status = 500;
-
-    if (isQuotaExhausted) {
-      friendlyMsg = 'The AI service has reached its request limit (quota exceeded). Please try again in a few minutes.';
-      status = 429;
-    } else if (isOverload) {
-      friendlyMsg = 'Gemini AI is temporarily overloaded. Please wait a moment and try again.';
-      status = 503;
-    }
-
-    res.status(status).json({ error: friendlyMsg });
+    logger.error({ err }, 'Upload Error');
+    res.status(500).json({ error: 'Server Error during upload processing' });
   }
 };
 
 export const getResumes = async (req, res) => {
   try {
-    const resumes = await prisma.resume.findMany({
-      where: { userId: req.user.id },
+    const documents = await prisma.document.findMany({
+      where: { userId: req.user.id, type: 'RESUME' },
       select: {
         id: true,
-        originalName: true,
+        title: true,
         atsScore: true,
         jobFitScore: true,
-        candidateName: true,
         createdAt: true
       },
       orderBy: { createdAt: 'desc' }
     });
-    res.json(resumes);
+    res.json(documents);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -104,16 +105,39 @@ export const getResumes = async (req, res) => {
 
 export const getResumeById = async (req, res) => {
   try {
-    const resume = await prisma.resume.findUnique({
+    const document = await prisma.document.findUnique({
       where: { id: req.params.id }
     });
 
-    if (!resume || resume.userId !== req.user.id) {
-      return res.status(404).json({ error: 'Resume not found or unauthorized' });
+    if (!document || document.userId !== req.user.id) {
+      return res.status(404).json({ error: 'Document not found or unauthorized' });
     }
 
-    res.json(resume);
+    res.json(document);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
+
+// Polling endpoint for frontend to check job status
+export const getJobStatus = async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const job = await prisma.aIJob.findUnique({
+      where: { id: jobId }
+    });
+
+    if (!job || job.userId !== req.user.id) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    res.json({
+      jobId: job.id,
+      status: job.status,
+      resultPayload: job.resultPayload,
+      errorMessage: job.errorMessage
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}

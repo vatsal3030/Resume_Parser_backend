@@ -1,0 +1,449 @@
+import { GoogleGenAI } from '@google/genai';
+import prisma from '../config/db.js';
+import { aiQueue } from '../queues/ai.queue.js';
+import logger from '../config/logger.js';
+
+// Configuration
+const DEFAULT_FREE_MODEL = process.env.DEFAULT_FREE_MODEL || 'deepseek/deepseek-chat:free';
+const DIRECT_GEMINI_FALLBACK = process.env.GEMINI_MODELS || 'gemini-2.5-flash';
+
+// Initialize Gemini (Direct)
+const gemini = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY
+});
+
+// System Prompt describing tools and constraints
+const SYSTEM_PROMPT = `You are the AI Career Copilot, an autonomous career advisor and assistant on the Elevara platform.
+You can execute actions and trigger background jobs on behalf of the user by calling tools.
+To call a tool, you MUST return a single JSON code block of this format:
+\`\`\`json
+{
+  "tool": "toolName",
+  "arguments": {
+    "argName": "value"
+  }
+}
+\`\`\`
+
+Available tools:
+1. listResumes: Lists all resumes of the user. Returns an array of resumes with id and title.
+   Arguments: None.
+2. getResumeContent: Retrieves the content of a specific resume.
+   Arguments: { "resumeId": "string" }
+3. tailorResume: Tailors a resume to a job description. This runs a background job.
+   Arguments: { "resumeId": "string", "jobDescription": "string", "modelId": "string" }
+4. generateCoverLetter: Generates a cover letter based on a resume and job description. This runs a background job.
+   Arguments: { "resumeId": "string", "jobDescription": "string", "companyName": "string", "modelId": "string" }
+5. generateMockInterview: Generates mock interview questions. This runs a background job.
+   Arguments: { "resumeId": "string", "targetRole": "string", "modelId": "string" }
+6. generateRoadmap: Generates a skill gap learning roadmap. This runs a background job.
+   Arguments: { "resumeId": "string", "targetRole": "string", "modelId": "string" }
+7. generatePortfolio: Generates a portfolio website structure. This runs a background job.
+   Arguments: { "resumeId": "string", "modelId": "string" }
+8. analyzeGitHub: Analyzes a GitHub profile. This runs a background job.
+   Arguments: { "githubUsername": "string", "modelId": "string" }
+9. navigateTo: Tells the frontend to navigate to a page.
+   Arguments: { "path": "string" } (Valid paths: "/dashboard/studio", "/dashboard/tracker", "/dashboard/tools/tailor", "/dashboard/tools/cover-letter", "/dashboard/tools/mock-interview", "/dashboard/tools/roadmap", "/dashboard/tools/portfolio", "/dashboard/tools/github")
+
+Instructions:
+- If the user asks to analyze, tailor, generate, or track something and you do not know the resume ID, call listResumes first to see if they have resumes. If they have resumes, ask them which one to use or use the most relevant one. If they have no resumes, tell them to upload a resume first.
+- When you call a tool, the system will execute it and return the tool output to you in the next turn.
+- Only output ONE tool call at a time. Do not add any text before or after the JSON block when calling a tool.
+- Once you have enqueued a job, explain to the user in natural language that the job has been enqueued and they will be notified when it is ready.
+- If you are ready to respond to the user without calling a tool, write a natural language response.
+`;
+
+/**
+ * Call OpenRouter with a messages array
+ */
+const callOpenRouterMessages = async (model, messages) => {
+  logger.info(`Agent calling OpenRouter (Model: ${model})`);
+  const cleanReferer = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.replace(/"/g, '').split(',')[0] : 'http://localhost:3000';
+
+  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': cleanReferer,
+      'X-Title': 'Elevara',
+    },
+    body: JSON.stringify({
+      model: model,
+      messages,
+      max_tokens: 4000
+    })
+  });
+
+  if (!response.ok) {
+    const errorData = await response.text();
+    throw new Error(`OpenRouter API error: ${response.status} - ${errorData}`);
+  }
+
+  const data = await response.json();
+  return data.choices[0].message.content;
+};
+
+/**
+ * Call Gemini Direct with a messages array
+ */
+const callGeminiDirectMessages = async (model, messages) => {
+  logger.info(`Agent calling Direct Gemini API (Model: ${model})`);
+  const systemInstruction = messages.find(m => m.role === 'system')?.content || '';
+  const conversationMessages = messages.filter(m => m.role !== 'system');
+  
+  const contents = conversationMessages.map(m => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: m.content }]
+  }));
+
+  const response = await gemini.models.generateContent({
+    model: model,
+    contents,
+    config: {
+      systemInstruction,
+      maxOutputTokens: 4000
+    }
+  });
+
+  return response.text;
+};
+
+/**
+ * Unified Agent call function — Gemini Direct is PRIMARY.
+ * OpenRouter is only attempted as a fallback if Gemini fails.
+ */
+export const callAgentAI = async (messages) => {
+  // ALWAYS try Gemini Direct first (reliable, free, works)
+  try {
+    return await callGeminiDirectMessages(DIRECT_GEMINI_FALLBACK, messages);
+  } catch (error) {
+    logger.warn({ err: error.message }, 'Agent AI: Gemini Direct failed. Attempting OpenRouter fallback.');
+    
+    // Only try OpenRouter as fallback if key is available
+    if (process.env.OPENROUTER_API_KEY) {
+      try {
+        return await callOpenRouterMessages(DEFAULT_FREE_MODEL, messages);
+      } catch (fallbackError) {
+        logger.error({ err: fallbackError.message }, 'Agent AI: OpenRouter fallback also failed.');
+        throw new Error('All AI providers failed.');
+      }
+    }
+    throw error;
+  }
+};
+
+/**
+ * Parse JSON tool calls from assistant text
+ */
+const parseToolCall = (text) => {
+  if (!text) return null;
+  const match = text.match(/```json\s*([\s\S]*?)\s*```/);
+  const jsonStr = match ? match[1] : text;
+  
+  try {
+    const parsed = JSON.parse(jsonStr.trim());
+    if (parsed && typeof parsed === 'object' && parsed.tool) {
+      return parsed;
+    }
+  } catch (e) {
+    const braceMatch = jsonStr.match(/\{[\s\S]*\}/);
+    if (braceMatch) {
+      try {
+        const parsed = JSON.parse(braceMatch[0]);
+        if (parsed && typeof parsed === 'object' && parsed.tool) {
+          return parsed;
+        }
+      } catch (innerError) {
+        // Ignore
+      }
+    }
+  }
+  return null;
+};
+
+/**
+ * Execute actual tool action in DB or queue
+ */
+const executeAgentTool = async (userId, toolName, args) => {
+  try {
+    switch (toolName) {
+      case 'listResumes': {
+        const resumes = await prisma.document.findMany({
+          where: { userId, type: 'RESUME', deletedAt: null },
+          select: { id: true, title: true, createdAt: true }
+        });
+        return resumes;
+      }
+      case 'getResumeContent': {
+        const resume = await prisma.document.findFirst({
+          where: { id: args.resumeId, userId }
+        });
+        if (!resume) return { error: 'Resume not found' };
+        return { id: resume.id, title: resume.title, content: resume.content };
+      }
+      case 'tailorResume': {
+        const resume = await prisma.document.findFirst({
+          where: { id: args.resumeId, userId }
+        });
+        if (!resume) return { error: 'Resume not found' };
+        const modelId = args.modelId || 'default';
+        const aiJob = await prisma.aIJob.create({
+          data: {
+            userId,
+            type: 'TAILOR_RESUME',
+            status: 'PENDING',
+            inputPayload: { resumeId: args.resumeId, jobDescription: args.jobDescription, modelId }
+          }
+        });
+        await aiQueue.add('TAILOR_RESUME', {
+          jobId: aiJob.id,
+          userId,
+          resumeId: args.resumeId,
+          resumeText: JSON.stringify(resume.content),
+          jobDescription: args.jobDescription,
+          modelId
+        }, { jobId: aiJob.id });
+        return { success: true, jobId: aiJob.id, message: 'Resume tailoring background job started successfully.' };
+      }
+      case 'generateCoverLetter': {
+        const resume = await prisma.document.findFirst({
+          where: { id: args.resumeId, userId }
+        });
+        if (!resume) return { error: 'Resume not found' };
+        const modelId = args.modelId || 'default';
+        const aiJob = await prisma.aIJob.create({
+          data: {
+            userId,
+            type: 'GENERATE_COVER_LETTER',
+            status: 'PENDING',
+            inputPayload: { resumeId: args.resumeId, jobDescription: args.jobDescription, companyName: args.companyName, modelId }
+          }
+        });
+        await aiQueue.add('GENERATE_COVER_LETTER', {
+          jobId: aiJob.id,
+          userId,
+          resumeId: args.resumeId,
+          resumeText: JSON.stringify(resume.content),
+          jobDescription: args.jobDescription,
+          companyName: args.companyName,
+          modelId
+        }, { jobId: aiJob.id });
+        return { success: true, jobId: aiJob.id, message: 'Cover letter generation background job started successfully.' };
+      }
+      case 'generateMockInterview': {
+        const resume = await prisma.document.findFirst({
+          where: { id: args.resumeId, userId }
+        });
+        if (!resume) return { error: 'Resume not found' };
+        const modelId = args.modelId || 'default';
+        const aiJob = await prisma.aIJob.create({
+          data: {
+            userId,
+            type: 'GENERATE_MOCK_INTERVIEW',
+            status: 'PENDING',
+            inputPayload: { resumeId: args.resumeId, targetRole: args.targetRole, modelId }
+          }
+        });
+        await aiQueue.add('GENERATE_MOCK_INTERVIEW', {
+          jobId: aiJob.id,
+          userId,
+          resumeId: args.resumeId,
+          resumeText: JSON.stringify(resume.content),
+          targetRole: args.targetRole,
+          modelId
+        }, { jobId: aiJob.id });
+        return { success: true, jobId: aiJob.id, message: 'Mock interview generation background job started successfully.' };
+      }
+      case 'generateRoadmap': {
+        const resume = await prisma.document.findFirst({
+          where: { id: args.resumeId, userId }
+        });
+        if (!resume) return { error: 'Resume not found' };
+        const modelId = args.modelId || 'default';
+        const aiJob = await prisma.aIJob.create({
+          data: {
+            userId,
+            type: 'GENERATE_ROADMAP',
+            status: 'PENDING',
+            inputPayload: { resumeId: args.resumeId, targetRole: args.targetRole, modelId }
+          }
+        });
+        await aiQueue.add('GENERATE_ROADMAP', {
+          jobId: aiJob.id,
+          userId,
+          resumeId: args.resumeId,
+          resumeText: JSON.stringify(resume.content),
+          targetRole: args.targetRole,
+          modelId
+        }, { jobId: aiJob.id });
+        return { success: true, jobId: aiJob.id, message: 'Career roadmap generation background job started successfully.' };
+      }
+      case 'generatePortfolio': {
+        const resume = await prisma.document.findFirst({
+          where: { id: args.resumeId, userId }
+        });
+        if (!resume) return { error: 'Resume not found' };
+        const modelId = args.modelId || 'default';
+        const aiJob = await prisma.aIJob.create({
+          data: {
+            userId,
+            type: 'GENERATE_PORTFOLIO',
+            status: 'PENDING',
+            inputPayload: { resumeId: args.resumeId, modelId }
+          }
+        });
+        await aiQueue.add('GENERATE_PORTFOLIO', {
+          jobId: aiJob.id,
+          userId,
+          resumeId: args.resumeId,
+          resumeText: JSON.stringify(resume.content),
+          modelId
+        }, { jobId: aiJob.id });
+        return { success: true, jobId: aiJob.id, message: 'Portfolio generation background job started successfully.' };
+      }
+      case 'analyzeGitHub': {
+        const modelId = args.modelId || 'default';
+        const aiJob = await prisma.aIJob.create({
+          data: {
+            userId,
+            type: 'ANALYZE_GITHUB',
+            status: 'PENDING',
+            inputPayload: { githubUsername: args.githubUsername, modelId }
+          }
+        });
+        await aiQueue.add('ANALYZE_GITHUB', {
+          jobId: aiJob.id,
+          userId,
+          githubUsername: args.githubUsername,
+          modelId
+        }, { jobId: aiJob.id });
+        return { success: true, jobId: aiJob.id, message: 'GitHub analysis background job started successfully.' };
+      }
+      case 'navigateTo': {
+        return { success: true, navigateTo: args.path, message: `Navigating user to ${args.path}` };
+      }
+      default:
+        return { error: `Tool ${toolName} not found` };
+    }
+  } catch (error) {
+    logger.error({ err: error, toolName }, 'Failed to execute agent tool');
+    return { error: `Failed to execute tool ${toolName}: ${error.message}` };
+  }
+};
+
+/**
+ * Main Agent Loop runner
+ */
+export const runAgentLoop = async (userId, message, context = {}) => {
+  // Fetch active conversation
+  let conversation = await prisma.conversation.findFirst({
+    where: { userId, deletedAt: null },
+    include: { messages: { orderBy: { createdAt: 'asc' } } }
+  });
+  if (!conversation) {
+    conversation = await prisma.conversation.create({
+      data: { userId, title: 'Copilot Chat' }
+    });
+    conversation.messages = [];
+  }
+
+  // Save user's new message to DB
+  await prisma.message.create({
+    data: {
+      conversationId: conversation.id,
+      role: 'user',
+      content: message
+    }
+  });
+
+  // Pull last 15 messages for active model context
+  const dbMessages = await prisma.message.findMany({
+    where: { conversationId: conversation.id },
+    orderBy: { createdAt: 'asc' },
+    take: 15
+  });
+
+  const messages = [
+    { role: 'system', content: `${SYSTEM_PROMPT}\n\nUser Context:\n- Current Page Path: ${context.pathname || 'Unknown'}` },
+    ...dbMessages.map(m => ({ role: m.role, content: m.content }))
+  ];
+
+  let loopCount = 0;
+  let actionInfo = null;
+
+  while (loopCount < 5) {
+    loopCount++;
+    const content = await callAgentAI(messages);
+    const toolCall = parseToolCall(content);
+
+    if (toolCall) {
+      logger.info({ toolCall }, 'Copilot agent invoking tool');
+      const result = await executeAgentTool(userId, toolCall.tool, toolCall.arguments || {});
+
+      // Record actions for SSE payload
+      if (toolCall.tool === 'navigateTo' && result.navigateTo) {
+        actionInfo = { type: 'navigate', path: result.navigateTo };
+      }
+      if (result.success && result.jobId) {
+        actionInfo = { type: 'job', jobId: result.jobId, tool: toolCall.tool };
+      }
+
+      // Add thoughts and result to message queue
+      messages.push({ role: 'assistant', content: content });
+      messages.push({ role: 'user', content: `Tool execution result: ${JSON.stringify(result)}` });
+
+      // Save intermediate loops to DB
+      await prisma.message.createMany({
+        data: [
+          { conversationId: conversation.id, role: 'assistant', content },
+          { conversationId: conversation.id, role: 'user', content: `Tool execution result: ${JSON.stringify(result)}` }
+        ]
+      });
+    } else {
+      // Done executing tools. Return context for streaming.
+      return { conversationId: conversation.id, messages, actionInfo };
+    }
+  }
+
+  return { conversationId: conversation.id, messages, actionInfo };
+};
+
+/**
+ * Stream Final Response Generator
+ * ALWAYS uses Gemini Direct for streaming — it's reliable and free.
+ * OpenRouter streaming is not attempted because the API key has no credits.
+ */
+export const streamFinalResponse = async function*(messages) {
+  const model = process.env.GEMINI_MODELS || 'gemini-2.5-flash';
+
+  const systemInstruction = messages.find(m => m.role === 'system')?.content || '';
+  const conversationMessages = messages.filter(m => m.role !== 'system');
+  
+  const contents = conversationMessages.map(m => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: m.content }]
+  }));
+
+  try {
+    const responseStream = await gemini.models.generateContentStream({
+      model,
+      contents,
+      config: {
+        systemInstruction,
+        maxOutputTokens: 8000
+      }
+    });
+
+    for await (const chunk of responseStream) {
+      if (chunk.text) {
+        yield chunk.text;
+      }
+    }
+  } catch (error) {
+    logger.error({ err: error.message }, 'Gemini streaming failed.');
+    // Yield a human-readable error message instead of crashing
+    yield `I encountered a temporary issue connecting to the AI service. Please try again in a moment.`;
+  }
+};
+

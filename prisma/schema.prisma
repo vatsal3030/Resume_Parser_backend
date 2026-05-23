@@ -32,16 +32,16 @@ enum DocumentType {
 }
 
 model User {
-  id               String           @id // Maps to Supabase auth.users(id)
-  email            String           @unique
-  name             String?
-  role             Role             @default(USER)
-  tier             SubscriptionTier @default(FREE)
-  credits          Int              @default(50) // Free tier gets 50 starting credits
-  razorpayCustomerId String?        @map("razorpay_customer_id")
-  
-  createdAt        DateTime         @default(now()) @map("created_at")
-  updatedAt        DateTime         @updatedAt @map("updated_at")
+  id                 String           @id // Maps to Supabase auth.users(id)
+  email              String           @unique
+  name               String?
+  role               Role             @default(USER)
+  tier               SubscriptionTier @default(FREE)
+  credits            Int              @default(500) // Free tier gets 500 starting credits
+  razorpayCustomerId String?          @map("razorpay_customer_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   profile          Profile?
   documents        Document[]
@@ -52,126 +52,173 @@ model User {
   communityPosts   CommunityPost[]
   postComments     PostComment[]
   postUpvotes      PostUpvote[]
-  companies        Company[] @relation("RecruiterCompany")
+  companies        Company[]        @relation("RecruiterCompany")
   candidateMatches CandidateMatch[] @relation("CandidateMatches")
+
+  // === Phase D: New Domain Relations ===
+  aiGenerations  AIGeneration[]
+  activityEvents ActivityEvent[]
+  notifications  Notification[]
+  workflows      Workflow[]
+  conversations  Conversation[]
+
+  // === Phase E: History & Studio ===
+  toolOutputs    ToolOutput[]
+  studioResumes  StudioResume[]
+  creditAudits   CreditAudit[]
 
   @@map("users")
 }
 
 model Profile {
-  id               String   @id @default(uuid())
-  userId           String   @unique @map("user_id")
-  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  field            String?  // e.g., "Software Engineering", "Design"
-  targetRole       String?  @map("target_role")
-  experienceLevel  String?  @map("experience_level") // e.g., "Fresher", "Mid-Level"
-  graduationYear   Int?     @map("graduation_year")
-  skills           String[] // Array of skills
-  salaryExpectation String? @map("salary_expectation")
-  
-  createdAt        DateTime @default(now()) @map("created_at")
-  updatedAt        DateTime @updatedAt @map("updated_at")
+  id     String @id @default(uuid())
+  userId String @unique @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Legacy onboarding fields
+  field             String? // e.g., "Software Engineering", "Design"
+  targetRole        String?  @map("target_role")
+  experienceLevel   String?  @map("experience_level")
+  graduationYear    Int?     @map("graduation_year")
+  skills            String[]
+  salaryExpectation String?  @map("salary_expectation")
+
+  // === Phase E: Extended profile fields ===
+  username        String?  @unique
+  bio             String?  @db.Text
+  phone           String?
+  country         String?
+  city            String?
+  school          String?
+  branch          String?
+  passingYear     String?  @map("passing_year")
+  socialLinks     Json?    @default("{}") @map("social_links")
+  projectLinks    Json?    @default("[]") @map("project_links")
+  certificates    Json?    @default("[]") @map("certificates")
+  achievements    String[]
+  creditBalance   Int      @default(500) @map("credit_balance")
+  currentResumeId String?  @map("current_resume_id")
+  dsaPlatforms    Json?    @default("{}") @map("dsa_platforms")
+  avatarUrl       String?  @map("avatar_url")
+
+  // Extended personalization fields
+  codingExperience   String?  @map("coding_experience")
+  preferredLanguages String[] @default([]) @map("preferred_languages")
+  careerGoals        String?  @db.Text @map("career_goals")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("profiles")
 }
 
 model Document {
-  id               String       @id @default(uuid())
-  userId           String       @map("user_id")
-  user             User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  type             DocumentType @default(RESUME)
-  title            String       // e.g., "Software Engineer Resume - Google"
-  
-  // Parsed content / raw data
-  content          Json?        
-  
-  // Scoring/Analytics (specifically for resumes)
-  atsScore         Int?         @default(0) @map("ats_score")
-  jobFitScore      Int?         @default(0) @map("job_fit_score")
-  
-  createdAt        DateTime     @default(now()) @map("created_at")
-  updatedAt        DateTime     @updatedAt @map("updated_at")
+  id     String       @id @default(uuid())
+  userId String       @map("user_id")
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type   DocumentType @default(RESUME)
+  title  String
 
+  content Json?
+
+  atsScore    Int? @default(0) @map("ats_score")
+  jobFitScore Int? @default(0) @map("job_fit_score")
+
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  @@index([userId])
   @@map("documents")
 }
 
 model AIJob {
-  id               String     @id @default(uuid())
-  userId           String     @map("user_id")
-  user             User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  type             String     // e.g., "PARSE_RESUME", "GENERATE_COVER_LETTER"
-  status           JobStatus  @default(PENDING)
-  
-  inputPayload     Json       @map("input_payload") // Data sent to AI
-  resultPayload    Json?      @map("result_payload") // Data received from AI
-  errorMessage     String?    @db.Text @map("error_message")
-  
-  creditsCost      Int        @default(10) @map("credits_cost")
-  
-  startedAt        DateTime?  @map("started_at")
-  completedAt      DateTime?  @map("completed_at")
-  createdAt        DateTime   @default(now()) @map("created_at")
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type   String // e.g., "PARSE_RESUME", "GENERATE_COVER_LETTER"
+  status JobStatus @default(PENDING)
+
+  inputPayload  Json    @map("input_payload") // Data sent to AI
+  resultPayload Json?   @map("result_payload") // Data received from AI
+  errorMessage  String? @map("error_message") @db.Text
+
+  creditsCost Int @default(10) @map("credits_cost")
+
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  deletedAt   DateTime? @map("deleted_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  // === Phase D: Relation to Generation Ledger ===
+  generations AIGeneration[]
+
+  // === Phase E: Relation to Tool Output History ===
+  toolOutputs ToolOutput[]
 
   @@index([userId, status])
   @@map("ai_jobs")
 }
 
 model Payment {
-  id               String   @id @default(uuid())
-  userId           String   @map("user_id")
-  user             User     @relation(fields: [userId], references: [id])
-  
-  razorpayOrderId  String   @unique @map("razorpay_order_id")
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id])
+
+  razorpayOrderId   String  @unique @map("razorpay_order_id")
   razorpayPaymentId String? @unique @map("razorpay_payment_id")
   razorpaySignature String? @map("razorpay_signature")
-  
-  amount           Int      // In paise (INR)
-  currency         String   @default("INR")
-  status           String   @default("created") // created, authorized, captured, failed
-  
-  creditsAdded     Int      @map("credits_added")
-  
-  createdAt        DateTime @default(now()) @map("created_at")
-  updatedAt        DateTime @updatedAt @map("updated_at")
 
+  amount   Int // In paise (INR)
+  currency String @default("INR")
+  status   String @default("created") // created, authorized, captured, failed
+
+  creditsAdded Int @map("credits_added")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
   @@map("payments")
 }
 
 model Subscription {
-  id               String   @id @default(uuid())
-  userId           String   @map("user_id")
-  user             User     @relation(fields: [userId], references: [id])
-  
-  razorpaySubscriptionId String @unique @map("razorpay_subscription_id")
-  planId           String   @map("plan_id")
-  status           String   // created, authenticated, active, pending, halted, cancelled
-  
-  currentStart     DateTime @map("current_start")
-  currentEnd       DateTime @map("current_end")
-  
-  createdAt        DateTime @default(now()) @map("created_at")
-  updatedAt        DateTime @updatedAt @map("updated_at")
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id])
 
+  razorpaySubscriptionId String @unique @map("razorpay_subscription_id")
+  planId                 String @map("plan_id")
+  status                 String // created, authenticated, active, pending, halted, cancelled
+
+  currentStart DateTime @map("current_start")
+  currentEnd   DateTime @map("current_end")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
   @@map("subscriptions")
 }
 
 // Application Tracker Model
 model JobApplication {
-  id          String   @id @default(uuid())
-  userId      String   @map("user_id")
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  company     String
-  role        String
-  url         String?
-  salary      String?
-  status      ApplicationStatus @default(SAVED)
-  notes       String?
-  appliedAt   DateTime? @map("applied_at")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id        String            @id @default(uuid())
+  userId    String            @map("user_id")
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company   String
+  role      String
+  url       String?
+  salary    String?
+  status    ApplicationStatus @default(SAVED)
+  notes     String?
+  appliedAt DateTime?         @map("applied_at")
+  deletedAt DateTime?         @map("deleted_at")
+  createdAt DateTime          @default(now()) @map("created_at")
+  updatedAt DateTime          @updatedAt @map("updated_at")
 
+  @@index([userId])
   @@map("job_applications")
 }
 
@@ -188,48 +235,53 @@ enum ApplicationStatus {
 // ==========================================
 
 model CommunityPost {
-  id          String   @id @default(uuid())
-  userId      String   @map("user_id")
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  title       String
-  content     String?  @db.Text
-  documentId  String?  @map("document_id") // Optional attached resume
-  
-  upvotes     PostUpvote[]
-  comments    PostComment[]
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  title      String
+  content    String? @db.Text
+  documentId String? @map("document_id") // Optional attached resume
+  category   String  @default("General")
 
+  upvotes  PostUpvote[]
+  comments PostComment[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@index([documentId])
   @@map("community_posts")
 }
 
 model PostComment {
-  id          String   @id @default(uuid())
-  postId      String   @map("post_id")
-  post        CommunityPost @relation(fields: [postId], references: [id], onDelete: Cascade)
-  
-  userId      String   @map("user_id")
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  content     String   @db.Text
-  
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id     String        @id @default(uuid())
+  postId String        @map("post_id")
+  post   CommunityPost @relation(fields: [postId], references: [id], onDelete: Cascade)
 
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  content String @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([postId])
+  @@index([userId])
   @@map("post_comments")
 }
 
 model PostUpvote {
-  id          String   @id @default(uuid())
-  postId      String   @map("post_id")
-  post        CommunityPost @relation(fields: [postId], references: [id], onDelete: Cascade)
-  
-  userId      String   @map("user_id")
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  createdAt   DateTime @default(now()) @map("created_at")
+  id     String        @id @default(uuid())
+  postId String        @map("post_id")
+  post   CommunityPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
 
   @@unique([postId, userId]) // User can only upvote a post once
   @@map("post_upvotes")
@@ -240,56 +292,295 @@ model PostUpvote {
 // ==========================================
 
 model Company {
-  id          String   @id @default(uuid())
+  id          String  @id @default(uuid())
   name        String
-  description String?  @db.Text
+  description String? @db.Text
   website     String?
-  logoUrl     String?  @map("logo_url")
-  
-  userId      String   @map("user_id") // Recruiter / Admin user
-  user        User     @relation("RecruiterCompany", fields: [userId], references: [id])
-  
+  logoUrl     String? @map("logo_url")
+
+  userId String @map("user_id") // Recruiter / Admin user
+  user   User   @relation("RecruiterCompany", fields: [userId], references: [id])
+
   jobPostings JobPosting[]
 
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
+  @@index([userId])
   @@map("companies")
 }
 
 model JobPosting {
-  id          String   @id @default(uuid())
-  companyId   String   @map("company_id")
-  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  
+  id        String  @id @default(uuid())
+  companyId String  @map("company_id")
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
   title       String
-  description String   @db.Text
+  description String  @db.Text
   location    String?
-  type        String?  // e.g., FULL_TIME, CONTRACT
-  salaryRange String?  @map("salary_range")
-  isActive    Boolean  @default(true) @map("is_active")
+  type        String? // e.g., FULL_TIME, CONTRACT
+  salaryRange String? @map("salary_range")
+  isActive    Boolean @default(true) @map("is_active")
 
-  matches     CandidateMatch[]
+  matches CandidateMatch[]
 
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
+  @@index([companyId])
   @@map("job_postings")
 }
 
 model CandidateMatch {
-  id          String   @id @default(uuid())
-  jobId       String   @map("job_id")
-  job         JobPosting @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  
-  userId      String   @map("user_id") // The candidate
-  user        User     @relation("CandidateMatches", fields: [userId], references: [id], onDelete: Cascade)
-  
-  matchScore  Float    @map("match_score") // 0.0 to 100.0
-  matchReason String?  @db.Text @map("match_reason")
+  id    String     @id @default(uuid())
+  jobId String     @map("job_id")
+  job   JobPosting @relation(fields: [jobId], references: [id], onDelete: Cascade)
 
-  createdAt   DateTime @default(now()) @map("created_at")
+  userId String @map("user_id") // The candidate
+  user   User   @relation("CandidateMatches", fields: [userId], references: [id], onDelete: Cascade)
+
+  matchScore  Float   @map("match_score") // 0.0 to 100.0
+  matchReason String? @map("match_reason") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at")
 
   @@unique([jobId, userId])
+  @@index([userId])
+  @@index([jobId])
   @@map("candidate_matches")
+}
+
+// ==========================================
+// Phase D: Domain-Level Backend Architecture
+// New tables added incrementally for the
+// Vertical Slice: AI Generation Ledger,
+// Activity Events, Notifications, Workflows,
+// and Conversations.
+// ==========================================
+
+/// Immutable ledger tracking every AI API call.
+/// Enables cost analytics, regeneration history, and provider monitoring.
+model AIGeneration {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  aiJobId String? @map("ai_job_id")
+  aiJob   AIJob?  @relation(fields: [aiJobId], references: [id], onDelete: SetNull)
+
+  provider       String // 'openrouter', 'gemini'
+  modelId        String @map("model_id") // 'gpt-4o', 'gemini-2.5-flash'
+  generationType String @map("generation_type") // PARSE_RESUME, TAILOR, COVER_LETTER
+
+  tokensPrompt     Int     @default(0) @map("tokens_prompt")
+  tokensCompletion Int     @default(0) @map("tokens_completion")
+  estimatedCostUsd Decimal @default(0) @map("estimated_cost_usd") @db.Decimal(10, 6)
+  creditsCost      Int     @default(1) @map("credits_cost")
+
+  durationMs  Int?    @map("duration_ms") // How long the AI call took
+  wasRetry    Boolean @default(false) @map("was_retry")
+  wasFallback Boolean @default(false) @map("was_fallback")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([aiJobId])
+  @@index([createdAt])
+  @@map("ai_generations")
+}
+
+/// Global append-only event ledger.
+/// Powers the Dashboard Activity Feed and serves as the source
+/// for derived Notifications and future analytics aggregation.
+model ActivityEvent {
+  id      String @id @default(uuid())
+  type    String // e.g., 'RESUME_UPLOADED', 'AI_JOB_COMPLETED'
+  actorId String @map("actor_id")
+  actor   User   @relation(fields: [actorId], references: [id], onDelete: Cascade)
+
+  targetId   String? @map("target_id") // Loose coupling: resume ID, job ID, etc.
+  targetType String? @map("target_type") // 'RESUME', 'AI_JOB', 'COVER_LETTER'
+  metadata   Json? // Flexible payload: { title, score, etc. }
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Derived notifications from this event
+  notifications Notification[]
+
+  @@index([actorId])
+  @@index([createdAt(sort: Desc)])
+  @@map("activity_events")
+}
+
+/// User-facing notifications derived from ActivityEvents.
+/// Tracks read/unread state for the TopHeader bell dropdown.
+model Notification {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  eventId String?        @map("event_id")
+  event   ActivityEvent? @relation(fields: [eventId], references: [id], onDelete: SetNull)
+
+  title     String
+  message   String
+  actionUrl String? @map("action_url")
+  isRead    Boolean @default(false) @map("is_read")
+  priority  String  @default("NORMAL") // NORMAL, HIGH, URGENT
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId, isRead])
+  @@index([eventId])
+  @@index([createdAt(sort: Desc)])
+  @@map("notifications")
+}
+
+/// Stateful tracking of multi-step user workflows.
+/// Powers the "Continue Where You Left Off" dashboard card.
+model Workflow {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type                 String // 'RESUME_OPTIMIZATION', 'INTERVIEW_PREP', 'ONBOARDING'
+  status               String @default("IN_PROGRESS") // IN_PROGRESS, COMPLETED, ABANDONED
+  currentStep          String @map("current_step") // e.g., 'UPLOAD', 'ANALYSIS', 'TAILORING'
+  completionPercentage Int    @default(0) @map("completion_percentage")
+  metadata             Json? // { resume_id, target_role, etc. }
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([userId, status])
+  @@map("workflows")
+}
+
+/// Scoped AI conversation threads for the Copilot.
+/// Optionally linked to a context (resume, job description) for
+/// contextual AI awareness.
+model Conversation {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  title       String?
+  contextType String? @map("context_type")
+  contextId   String? @map("context_id")
+
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  messages Message[]
+
+  @@index([userId])
+  @@map("conversations")
+}
+
+/// Individual messages within a Copilot conversation.
+model Message {
+  id             String       @id @default(uuid())
+  conversationId String       @map("conversation_id")
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  role       String // 'user', 'assistant', 'system'
+  content    String @db.Text
+  tokensUsed Int    @default(0) @map("tokens_used")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([conversationId, createdAt])
+  @@map("messages")
+}
+
+// ==========================================
+// Phase E: History, Studio & Credit Audit
+// ==========================================
+
+/// Centralized storage for all AI tool generation outputs.
+/// Enables history browsing, pinning, and soft delete.
+model ToolOutput {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  aiJobId String? @map("ai_job_id")
+  aiJob   AIJob?  @relation(fields: [aiJobId], references: [id], onDelete: SetNull)
+
+  toolType     String  @map("tool_type")
+  title        String
+  inputSummary Json?   @map("input_summary")
+  outputPayload Json   @map("output_payload")
+  isPinned     Boolean @default(false) @map("is_pinned")
+
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  @@index([userId, toolType])
+  @@index([aiJobId])
+  @@index([createdAt(sort: Desc)])
+  @@map("tool_outputs")
+}
+
+/// Resume template definitions (admin-seeded).
+model ResumeTemplate {
+  id          String  @id @default(uuid())
+  name        String
+  description String?
+  thumbnailUrl String? @map("thumbnail_url")
+  templateData Json    @map("template_data")
+  category    String  @default("general")
+  isFree      Boolean @default(true) @map("is_free")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  studioResumes StudioResume[]
+
+  @@map("resume_templates")
+}
+
+/// User-created resumes in the Studio builder.
+model StudioResume {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  templateId String?         @map("template_id")
+  template   ResumeTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  title        String   @default("Untitled Resume")
+  resumeData   Json     @default("{}") @map("resume_data")
+  sectionOrder String[] @default(["personal", "summary", "experience", "education", "skills", "projects", "certifications"]) @map("section_order")
+  styleConfig  Json?    @default("{}") @map("style_config")
+  version      Int      @default(1)
+
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@index([templateId])
+  @@map("studio_resumes")
+}
+
+/// Credit audit trail for tracking all credit mutations.
+model CreditAudit {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  action       String  // 'DEDUCT', 'ROLLBACK', 'PURCHASE', 'BONUS', 'REFUND'
+  amount       Decimal @db.Decimal(10, 2)
+  balanceAfter Decimal? @map("balance_after") @db.Decimal(10, 2)
+  toolType     String?  @map("tool_type")
+  aiJobId      String?  @map("ai_job_id")
+  reason       String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([aiJobId])
+  @@map("credit_audit")
 }

@@ -47,6 +47,7 @@ export const requestTailoring = async (req, res) => {
     await aiQueue.add('TAILOR_RESUME', {
       jobId: aiJob.id,
       userId: req.user.id,
+      resumeId,
       resumeText: JSON.stringify(resume.content),
       jobDescription,
       modelId
@@ -86,6 +87,7 @@ export const requestCoverLetter = async (req, res) => {
     await aiQueue.add('GENERATE_COVER_LETTER', {
       jobId: aiJob.id,
       userId: req.user.id,
+      resumeId,
       resumeText: JSON.stringify(resume.content),
       jobDescription,
       companyName,
@@ -126,6 +128,7 @@ export const requestMockInterview = async (req, res) => {
     await aiQueue.add('GENERATE_MOCK_INTERVIEW', {
       jobId: aiJob.id,
       userId: req.user.id,
+      resumeId,
       resumeText: JSON.stringify(resume.content),
       targetRole,
       modelId
@@ -158,13 +161,14 @@ export const requestRoadmap = async (req, res) => {
         userId: req.user.id,
         type: 'GENERATE_ROADMAP',
         status: 'PENDING',
-        inputPayload: { targetRole, modelId }
+        inputPayload: { resumeId, targetRole, modelId }
       }
     });
 
     await aiQueue.add('GENERATE_ROADMAP', {
       jobId: aiJob.id,
       userId: req.user.id,
+      resumeId,
       resumeText: JSON.stringify(resume.content),
       targetRole,
       modelId
@@ -197,13 +201,14 @@ export const requestPortfolio = async (req, res) => {
         userId: req.user.id,
         type: 'GENERATE_PORTFOLIO',
         status: 'PENDING',
-        inputPayload: { modelId }
+        inputPayload: { resumeId, modelId }
       }
     });
 
     await aiQueue.add('GENERATE_PORTFOLIO', {
       jobId: aiJob.id,
       userId: req.user.id,
+      resumeId,
       resumeText: JSON.stringify(resume.content),
       modelId
     }, { jobId: aiJob.id });

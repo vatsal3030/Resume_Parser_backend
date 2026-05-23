@@ -1,6 +1,7 @@
 import prisma from '../config/db.js';
 import logger from '../config/logger.js';
 import { enqueueAIJob } from '../queues/ai.queue.js';
+import { emitEvent } from '../services/activity.service.js';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const pdfParse = require('pdf-parse');
@@ -70,6 +71,15 @@ export const uploadResume = async (req, res) => {
     });
 
     logger.info({ jobId: aiJob.id, userId: user.id }, 'Resume queued for processing');
+
+    // 3.5 Emit Activity Event for the Upload itself
+    await emitEvent({
+      type: 'RESUME_UPLOADED',
+      actorId: user.id,
+      targetId: aiJob.id,
+      targetType: 'AI_JOB',
+      metadata: { originalName: req.file.originalname, label: 'Resume Uploaded', icon: '📄' }
+    });
 
     // 4. Respond immediately
     res.status(202).json({

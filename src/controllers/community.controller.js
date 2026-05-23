@@ -3,7 +3,7 @@ import logger from '../config/logger.js';
 
 export const createPost = async (req, res) => {
   try {
-    const { title, content, documentId } = req.body;
+    const { title, content, documentId, category } = req.body;
     
     if (!title) {
       return res.status(400).json({ error: 'Title is required' });
@@ -22,7 +22,8 @@ export const createPost = async (req, res) => {
         userId: req.user.id,
         title,
         content,
-        documentId
+        documentId,
+        category: category || 'General'
       },
       include: {
         user: { select: { id: true, name: true } }
@@ -38,7 +39,23 @@ export const createPost = async (req, res) => {
 
 export const getPosts = async (req, res) => {
   try {
+    const { category, search } = req.query;
+    
+    const where = {};
+    
+    if (category && category !== 'All') {
+      where.category = category;
+    }
+    
+    if (search) {
+      where.OR = [
+        { title: { contains: search, mode: 'insensitive' } },
+        { content: { contains: search, mode: 'insensitive' } }
+      ];
+    }
+
     const posts = await prisma.communityPost.findMany({
+      where,
       orderBy: { createdAt: 'desc' },
       include: {
         user: { select: { name: true } },
@@ -76,7 +93,16 @@ export const getPostById = async (req, res) => {
       }
     });
 
-    res.json({ ...post, hasUpvoted: !!upvote });
+    // Fetch basic document details if documentId is present
+    let document = null;
+    if (post.documentId) {
+      document = await prisma.document.findFirst({
+        where: { id: post.documentId },
+        select: { id: true, title: true }
+      });
+    }
+
+    res.json({ ...post, document, hasUpvoted: !!upvote });
   } catch (error) {
     logger.error({ err: error }, 'Failed to fetch post');
     res.status(500).json({ error: 'Failed to fetch post' });

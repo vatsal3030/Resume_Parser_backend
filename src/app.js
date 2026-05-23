@@ -1,4 +1,5 @@
 import express from 'express';
+import helmet from 'helmet';
 import cors from 'cors';
 import { API_PREFIX } from './constants.js';
 import resumeRoutes from './routes/resume.routes.js';
@@ -10,11 +11,20 @@ import chatRoutes from './routes/chat.routes.js';
 import communityRoutes from './routes/community.routes.js';
 import recruiterRoutes from './routes/recruiter.routes.js';
 import extensionRoutes from './routes/extension.routes.js';
+import domainRoutes from './routes/domain.routes.js';
+import adminRoutes from './routes/admin.routes.js';
+import historyRoutes from './routes/history.routes.js';
+import studioRoutes from './routes/studio.routes.js';
+import dsaRoutes from './routes/dsa.routes.js';
 import prisma from './config/db.js';
 import { globalErrorHandler } from './middlewares/error.middleware.js';
 import { standardRateLimiter } from './middlewares/rateLimit.middleware.js';
+import { tracingMiddleware } from './utils/tracing.js';
 
 const app = express();
+
+app.use(tracingMiddleware);
+app.use(helmet());
 
 // CORS: Only allow frontend origins (Vercel + localhost dev)
 const allowedOrigins = [
@@ -48,6 +58,11 @@ app.use(`${API_PREFIX}/chat`, chatRoutes);
 app.use(`${API_PREFIX}/community`, communityRoutes);
 app.use(`${API_PREFIX}/recruiter`, recruiterRoutes);
 app.use(`${API_PREFIX}/extension`, extensionRoutes);
+app.use(`${API_PREFIX}/domain`, domainRoutes);
+app.use(`${API_PREFIX}/admin`, adminRoutes);
+app.use(`${API_PREFIX}/history`, historyRoutes);
+app.use(`${API_PREFIX}/studio`, studioRoutes);
+app.use(`${API_PREFIX}/dsa`, dsaRoutes);
 
 app.get('/', (req, res) => {
   res.send('API is running...');

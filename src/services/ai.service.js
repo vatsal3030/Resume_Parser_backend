@@ -131,12 +131,13 @@ export const generatePortfolio = async (resumeText, modelId = null) => {
   const systemInstruction = `You are an expert web developer and UI/UX designer. Output ONLY a raw JSON object.`;
   const prompt = `
   Take this resume and extract/generate the structure for a stunning personal portfolio website.
+  If any data is missing from the resume, invent plausible default professional values based on the overall profile.
   
-  Return a JSON object:
+  Return a JSON object with this exact structure:
   1. "header": { "name": "...", "title": "...", "tagline": "..." }
   2. "about": "A compelling 2-paragraph bio."
-  3. "skills": Array of strings, grouped into categories if possible.
-  4. "projects": Array of objects { "name": "...", "description": "...", "techStack": ["..."] } (Extract from experience/projects)
+  3. "skills": Array of strings ONLY (e.g., ["React", "Node.js", "Python"]). Do NOT group into objects.
+  4. "projects": Array of objects { "name": "...", "description": "...", "techStack": ["..."], "liveUrl": "..." } (Extract from experience/projects, and include a liveUrl if provided)
   5. "contact": { "email": "...", "linkedin": "...", "github": "..." }
 
   Resume:
@@ -158,7 +159,8 @@ export const analyzeGitHub = async (githubUsername, modelId = null) => {
         language: r.language,
         stars: r.stargazers_count,
         forks: r.forks_count,
-        topics: r.topics
+        topics: r.topics,
+        homepage: r.homepage
       }));
     }
   } catch (error) {
@@ -171,10 +173,15 @@ export const analyzeGitHub = async (githubUsername, modelId = null) => {
   
   Return a JSON object:
   1. "developerArchetype": "e.g., The React Specialist, The Open Source Contributor, The Full Stack Generalist"
-  2. "topLanguages": Array of strings.
-  3. "strengths": Array of strings based on the repo analysis.
-  4. "areasForGrowth": Array of strings (what they should build next).
-  5. "overallScore": Score out of 100 based on activity and project complexity.
+  2. "gitRoast": A witty, slightly sarcastic but good-natured roasting or praising of their coding habits (1-2 sentences).
+  3. "topLanguages": Array of objects { "name": "...", "percentage": "...", "repoCount": ... } (e.g., { "name": "JavaScript", "percentage": "45%", "repoCount": 5 })
+  4. "topRepos": Array of top 3 repositories { "name": "...", "description": "Write a short, engaging description for this repo based on its data.", "stars": ..., "language": "...", "liveUrl": "..." } (Extract liveUrl from homepage if provided, otherwise leave empty)
+  5. "strengths": Array of strings based on the repo analysis.
+  6. "areasForGrowth": Array of strings (what they should build next).
+  7. "overallScore": Score out of 100 based on activity and project complexity.
+  8. "stackCombinations": Array of short strings (e.g., ["MERN Stack", "JAMstack", "AI/ML Focus", "Backend Specialist"]) based on their repos.
+  9. "codeComplexity": String (e.g., "High", "Medium", "Low") based on the types of projects.
+  10. "commitStyle": String (e.g., "Weekend Warrior", "Night Owl", "Consistent Daily", "Burst Coder") simulating a commit time distribution archetype.
 
   GitHub Data:
   ${JSON.stringify(githubData || "No public data found", null, 2)}
@@ -182,57 +189,83 @@ export const analyzeGitHub = async (githubUsername, modelId = null) => {
   return await generateAI({ prompt, systemInstruction, responseFormat: 'json', modelId });
 };
 
-export const chatWithCopilot = async function*(history, newMessage) {
-  const systemInstruction = `You are the AI Career Copilot, an expert career advisor. Keep your answers concise, practical, and helpful.`;
+export const chatWithCopilot = async function*(history, newMessage, context = {}) {
+  const systemInstruction = `You are the AI Career Copilot, an expert career advisor and full-stack assistant for the Elevara platform. Keep your answers concise, practical, and helpful.
+
+You have the ability to automatically navigate the user to different tools based on their intent.
+If the user asks to perform an action or you believe one of our tools would perfectly solve their current problem, you MUST include a special action tag in your response.
+
+Here are the tools available and their action tags:
+- [[ACTION:NAV_STUDIO]] - Navigates to the Resume Studio (resume builder/editor).
+- [[ACTION:NAV_TAILOR]] - Navigates to the Resume Tailor (matches resume to a job description).
+- [[ACTION:NAV_COVER_LETTER]] - Navigates to the Cover Letter Generator.
+- [[ACTION:NAV_ROADMAP]] - Navigates to the Career Roadmap Generator (skill gap analysis).
+- [[ACTION:NAV_MOCK_INTERVIEW]] - Navigates to the Mock Interview Simulator.
+
+If you decide to trigger an action, say something briefly to confirm, and append the exact tag at the very end of your response.
+Example: "I can help you tailor your resume for a Software Engineer role. Let me take you to the Tailor tool now! [[ACTION:NAV_TAILOR]]"
+
+User Context:
+- Current Page Path: ${context.pathname || 'Unknown'}
+`;
   
+  let openRouterFailed = false;
   if (useOpenRouter) {
-    const messages = [
-      { role: 'system', content: systemInstruction },
-      ...history.map(m => ({ role: m.role, content: m.content })),
-      { role: 'user', content: newMessage }
-    ];
+    try {
+      const messages = [
+        { role: 'system', content: systemInstruction },
+        ...history.map(m => ({ role: m.role, content: m.content })),
+        { role: 'user', content: newMessage }
+      ];
 
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'http://localhost:3000',
-        'X-Title': 'AI Career OS',
-      },
-      body: JSON.stringify({
-        model: process.env.OPENROUTER_MODEL || 'google/gemini-2.5-flash',
-        messages,
-        stream: true
-      })
-    });
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'http://localhost:3000',
+          'X-Title': 'Elevara',
+        },
+        body: JSON.stringify({
+          model: process.env.OPENROUTER_MODEL || 'google/gemini-2.5-flash',
+          messages,
+          stream: true
+        })
+      });
 
-    if (!response.ok) {
-      throw new Error(`OpenRouter API error: ${response.statusText}`);
-    }
+      if (!response.ok) {
+        throw new Error(`OpenRouter API error: ${response.statusText}`);
+      }
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split('\n').filter(line => line.trim() !== '');
-      for (const line of lines) {
-        if (line === 'data: [DONE]') return;
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6));
-            if (data.choices && data.choices[0].delta && data.choices[0].delta.content) {
-              yield data.choices[0].delta.content;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n').filter(line => line.trim() !== '');
+        for (const line of lines) {
+          if (line === 'data: [DONE]') return;
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.choices && data.choices[0].delta && data.choices[0].delta.content) {
+                yield data.choices[0].delta.content;
+              }
+            } catch (e) {
+              // Ignore parse errors on partial streams
             }
-          } catch (e) {
-            // Ignore parse errors on partial streams
           }
         }
       }
+      return; // Return early if successful
+    } catch (e) {
+      logger.warn({ err: e.message }, 'Agent AI: OpenRouter Stream failed. Attempting Gemini Direct fallback.');
+      openRouterFailed = true;
     }
-  } else {
+  } 
+  
+  if (!useOpenRouter || openRouterFailed) {
     // Native Gemini Stream — use generateContentStream (correct SDK method)
     // Build the full conversation as a single prompt since @google/genai
     // does not expose a chat().sendMessageStream() method.

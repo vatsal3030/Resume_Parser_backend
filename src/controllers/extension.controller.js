@@ -1,4 +1,4 @@
-import { generateContent } from '../services/ai.service.js';
+import { generateAI } from '../providers/ai.provider.js';
 import prisma from '../config/db.js';
 import logger from '../config/logger.js';
 
@@ -36,8 +36,8 @@ export const checkJobFit = async (req, res) => {
     ${jobDescription}
     `;
 
-    // BUG FIX: Use the shared generateContent function instead of broken gemini.models.chat()
-    const result = await generateContent(prompt, systemInstruction, 'json');
+    // BUG FIX: Use the shared generateAI function instead of broken gemini.models.chat()
+    const { result } = await generateAI({ prompt, systemInstruction, responseFormat: 'json' });
 
     res.json({
       score: result.score || 0,

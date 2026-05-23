@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js';
+import prisma from '../config/db.js';
 
 export const protect = async (req, res, next) => {
   let token;
@@ -21,6 +22,17 @@ export const protect = async (req, res, next) => {
     
     if (error || !user) {
         throw new Error('Invalid Supabase token');
+    }
+
+    // Ensure user exists in Prisma DB
+    let localUser = await prisma.user.findUnique({ where: { id: user.id } });
+    if (!localUser) {
+      localUser = await prisma.user.create({
+        data: {
+          id: user.id,
+          email: user.email || 'unknown@example.com'
+        }
+      });
     }
 
     req.user = { id: user.id, email: user.email };

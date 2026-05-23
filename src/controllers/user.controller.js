@@ -18,11 +18,12 @@ export const onboardUser = async (req, res) => {
     }
 
     // Upsert Profile
+    const parsedGradYear = graduationYear ? parseInt(graduationYear) : null;
     const profile = await prisma.profile.upsert({
       where: { userId },
-      update: { field, targetRole, experienceLevel, graduationYear, skills, salaryExpectation },
+      update: { field, targetRole, experienceLevel, graduationYear: parsedGradYear, skills, salaryExpectation },
       create: {
-        userId, field, targetRole, experienceLevel, graduationYear, skills, salaryExpectation
+        userId, field, targetRole, experienceLevel, graduationYear: parsedGradYear, skills, salaryExpectation
       }
     });
 
@@ -35,17 +36,69 @@ export const onboardUser = async (req, res) => {
 
 export const getUserDetails = async (req, res) => {
   try {
-    const user = await prisma.user.findUnique({
+    let user = await prisma.user.findUnique({
       where: { id: req.user.id },
       include: { profile: true }
     });
     
     if (!user) {
-      return res.status(404).json({ error: 'User not found' });
+      // Auto-create user if they exist in Supabase but not in Prisma
+      user = await prisma.user.create({
+        data: {
+          id: req.user.id,
+          email: req.user.email || 'unknown@example.com',
+          profile: {
+            create: {} // Instantiate an empty profile to prevent frontend crashes
+          }
+        },
+        include: { profile: true }
+      });
     }
     
     res.json(user);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch user details' });
+  }
+};
+
+export const updateProfile = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { 
+      username, phone, country, city, bio,
+      targetRole, experienceLevel, field, salaryExpectation, skills,
+      school, branch, passingYear, graduationYear,
+      socialLinks, achievements,
+      codingExperience, preferredLanguages, careerGoals,
+      avatarUrl
+    } = req.body;
+
+    const profile = await prisma.profile.upsert({
+      where: { userId },
+      update: {
+        username, phone, country, city, bio,
+        targetRole, experienceLevel, field, salaryExpectation, skills,
+        school, branch, passingYear, 
+        graduationYear: graduationYear ? parseInt(graduationYear) : null,
+        socialLinks, achievements,
+        codingExperience, preferredLanguages, careerGoals,
+        avatarUrl
+      },
+      create: {
+        userId,
+        username, phone, country, city, bio,
+        targetRole, experienceLevel, field, salaryExpectation, skills,
+        school, branch, passingYear, 
+        graduationYear: graduationYear ? parseInt(graduationYear) : null,
+        socialLinks, achievements,
+        codingExperience, preferredLanguages, careerGoals,
+        avatarUrl
+      }
+    });
+
+    res.status(200).json({ message: 'Profile updated successfully', profile });
+  } catch (err) {
+    logger.error({ err }, 'Update Profile Error');
+    res.status(500).json({ error: 'Failed to update profile', details: err.message });
   }
 };

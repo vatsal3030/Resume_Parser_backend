@@ -11,6 +11,7 @@ const razorpay = new Razorpay({
 const PLAN_CREDITS = {
   'plan_basic': 100,
   'plan_pro': 500,
+  'plan_enterprise': 1500,
 };
 
 export const createOrder = async (req, res) => {

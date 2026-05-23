@@ -29,7 +29,7 @@ app.use(helmet());
 // CORS: Only allow frontend origins (Vercel + localhost dev)
 const allowedOrigins = [
   'http://localhost:3000',
-  process.env.ALLOWED_ORIGINS // Set this to your Vercel URL in Render env vars
+  ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()) : [])
 ].filter(Boolean);
 
 app.use(cors({

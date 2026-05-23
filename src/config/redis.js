@@ -27,6 +27,10 @@ if (redisUrl) {
     lazyConnect: true,          // Don't connect until first command
   };
 } else {
+  if (isProduction) {
+    logger.error('REDIS_URL is missing in production environment. Please configure it.');
+    process.exit(1);
+  }
   // Local development fallback
   connectionOptions = {
     host: '127.0.0.1',

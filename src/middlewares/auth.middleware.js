@@ -25,15 +25,14 @@ export const protect = async (req, res, next) => {
     }
 
     // Ensure user exists in Prisma DB
-    let localUser = await prisma.user.findUnique({ where: { id: user.id } });
-    if (!localUser) {
-      localUser = await prisma.user.create({
-        data: {
-          id: user.id,
-          email: user.email || 'unknown@example.com'
-        }
-      });
-    }
+    const localUser = await prisma.user.upsert({
+      where: { id: user.id },
+      update: {},
+      create: {
+        id: user.id,
+        email: user.email || 'unknown@example.com'
+      }
+    });
 
     req.user = { id: user.id, email: user.email };
     next();

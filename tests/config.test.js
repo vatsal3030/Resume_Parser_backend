@@ -12,7 +12,7 @@ describe('Config & Feature Flags', () => {
 
   it('should have correct default governance limits', () => {
     expect(config.limits.maxUploadSizeMB).toBe(5);
-    expect(config.limits.maxGenerationsPerDay).toBe(5);
+    expect(config.limits.maxGenerationsPerDay).toBe(500);
     expect(config.limits.maxConcurrentJobs).toBe(1);
   });
 

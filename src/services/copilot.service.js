@@ -2,6 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 import prisma from '../config/db.js';
 import { aiQueue } from '../queues/ai.queue.js';
 import logger from '../config/logger.js';
+import { generateAI } from '../providers/ai.provider.js';
 
 // Configuration
 const DEFAULT_FREE_MODEL = process.env.DEFAULT_FREE_MODEL || 'deepseek/deepseek-chat:free';
@@ -47,11 +48,37 @@ Available tools:
 
 Instructions:
 - If the user asks to analyze, tailor, generate, or track something and you do not know the resume ID, call listResumes first to see if they have resumes. If they have resumes, ask them which one to use or use the most relevant one. If they have no resumes, tell them to upload a resume first.
+- If a tool requires arguments like jobDescription or targetRole, ALWAYS ask the user for them FIRST before calling the tool. Do NOT guess or hallucinate these values.
 - When you call a tool, the system will execute it and return the tool output to you in the next turn.
 - Only output ONE tool call at a time. Do not add any text before or after the JSON block when calling a tool.
 - Once you have enqueued a job, explain to the user in natural language that the job has been enqueued and they will be notified when it is ready.
 - If you are ready to respond to the user without calling a tool, write a natural language response.
 `;
+
+/**
+ * Normalizes the model selection and returns the appropriate provider and model name.
+ */
+const resolveProviderAndModel = (requestedModelId) => {
+  const hasOpenRouter = !!process.env.OPENROUTER_API_KEY;
+
+  if (!requestedModelId || requestedModelId === 'default') {
+    if (hasOpenRouter) {
+      return { provider: 'openrouter', model: DEFAULT_FREE_MODEL };
+    }
+    return { provider: 'gemini', model: DIRECT_GEMINI_FALLBACK };
+  }
+
+  if (requestedModelId.startsWith('gemini-')) {
+    return { provider: 'gemini', model: requestedModelId };
+  }
+
+  if (hasOpenRouter) {
+     return { provider: 'openrouter', model: requestedModelId };
+  }
+
+  logger.warn(`OpenRouter model ${requestedModelId} requested, but OPENROUTER_API_KEY is missing. Falling back to Direct Gemini.`);
+  return { provider: 'gemini', model: DIRECT_GEMINI_FALLBACK };
+};
 
 /**
  * Call OpenRouter with a messages array
@@ -60,28 +87,21 @@ const callOpenRouterMessages = async (model, messages) => {
   logger.info(`Agent calling OpenRouter (Model: ${model})`);
   const cleanReferer = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.replace(/"/g, '').split(',')[0] : 'http://localhost:3000';
 
-  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
+  const { default: axios } = await import('axios');
+  const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
+    model: model,
+    messages,
+    max_tokens: 4000
+  }, {
     headers: {
       'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
       'Content-Type': 'application/json',
       'HTTP-Referer': cleanReferer,
       'X-Title': 'Elevara',
-    },
-    body: JSON.stringify({
-      model: model,
-      messages,
-      max_tokens: 4000
-    })
+    }
   });
 
-  if (!response.ok) {
-    const errorData = await response.text();
-    throw new Error(`OpenRouter API error: ${response.status} - ${errorData}`);
-  }
-
-  const data = await response.json();
-  return data.choices[0].message.content;
+  return response.data.choices[0].message.content;
 };
 
 /**
@@ -110,26 +130,35 @@ const callGeminiDirectMessages = async (model, messages) => {
 };
 
 /**
- * Unified Agent call function — Gemini Direct is PRIMARY.
- * OpenRouter is only attempted as a fallback if Gemini fails.
+ * Unified Agent call function respecting user's model choice.
  */
-export const callAgentAI = async (messages) => {
-  // ALWAYS try Gemini Direct first (reliable, free, works)
+export const callAgentAI = async (messages, modelId = null) => {
+  const target = resolveProviderAndModel(modelId);
   try {
-    return await callGeminiDirectMessages(DIRECT_GEMINI_FALLBACK, messages);
+    if (target.provider === 'openrouter') {
+      return await callOpenRouterMessages(target.model, messages);
+    } else {
+      return await callGeminiDirectMessages(target.model, messages);
+    }
   } catch (error) {
-    logger.warn({ err: error.message }, 'Agent AI: Gemini Direct failed. Attempting OpenRouter fallback.');
+    logger.warn({ err: error.message }, `Agent AI: Primary provider (${target.provider}) failed. Attempting fallback.`);
     
-    // Only try OpenRouter as fallback if key is available
-    if (process.env.OPENROUTER_API_KEY) {
+    if (target.provider === 'openrouter') {
       try {
-        return await callOpenRouterMessages(DEFAULT_FREE_MODEL, messages);
+        return await callGeminiDirectMessages(DIRECT_GEMINI_FALLBACK, messages);
       } catch (fallbackError) {
-        logger.error({ err: fallbackError.message }, 'Agent AI: OpenRouter fallback also failed.');
         throw new Error('All AI providers failed.');
       }
+    } else {
+      if (process.env.OPENROUTER_API_KEY) {
+        try {
+          return await callOpenRouterMessages(DEFAULT_FREE_MODEL, messages);
+        } catch (fallbackError) {
+          throw new Error('All AI providers failed.');
+        }
+      }
+      throw error;
     }
-    throw error;
   }
 };
 
@@ -374,7 +403,7 @@ export const runAgentLoop = async (userId, message, context = {}) => {
 
   while (loopCount < 5) {
     loopCount++;
-    const content = await callAgentAI(messages);
+    const content = await callAgentAI(messages, context.modelId);
     const toolCall = parseToolCall(content);
 
     if (toolCall) {
@@ -411,38 +440,86 @@ export const runAgentLoop = async (userId, message, context = {}) => {
 
 /**
  * Stream Final Response Generator
- * ALWAYS uses Gemini Direct for streaming — it's reliable and free.
- * OpenRouter streaming is not attempted because the API key has no credits.
+ * Uses requested modelId.
  */
-export const streamFinalResponse = async function*(messages) {
-  const model = process.env.GEMINI_MODELS || 'gemini-2.5-flash';
-
+export const streamFinalResponse = async function*(messages, modelId = null) {
+  const target = resolveProviderAndModel(modelId);
   const systemInstruction = messages.find(m => m.role === 'system')?.content || '';
   const conversationMessages = messages.filter(m => m.role !== 'system');
   
-  const contents = conversationMessages.map(m => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }]
-  }));
-
   try {
-    const responseStream = await gemini.models.generateContentStream({
-      model,
-      contents,
-      config: {
-        systemInstruction,
-        maxOutputTokens: 8000
-      }
-    });
+    if (target.provider === 'openrouter') {
+      const { default: axios } = await import('axios');
+      const cleanReferer = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.replace(/"/g, '').split(',')[0] : 'http://localhost:3000';
+      const openRouterMessages = [
+        { role: 'system', content: systemInstruction },
+        ...conversationMessages.map(m => ({ role: m.role, content: m.content }))
+      ];
+      
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': cleanReferer,
+          'X-Title': 'Elevara',
+        },
+        body: JSON.stringify({
+          model: target.model,
+          messages: openRouterMessages,
+          stream: true
+        })
+      });
 
-    for await (const chunk of responseStream) {
-      if (chunk.text) {
-        yield chunk.text;
+      if (!response.ok) {
+        throw new Error(`OpenRouter API error: ${response.statusText}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n').filter(line => line.trim() !== '');
+        for (const line of lines) {
+          if (line === 'data: [DONE]') return;
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.choices && data.choices[0].delta && data.choices[0].delta.content) {
+                yield data.choices[0].delta.content;
+              }
+            } catch (e) {
+              // Ignore parse errors on partial streams
+            }
+          }
+        }
+      }
+    } else {
+      // Gemini Direct Streaming
+      const contents = conversationMessages.map(m => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }]
+      }));
+
+      const responseStream = await gemini.models.generateContentStream({
+        model: target.model,
+        contents,
+        config: {
+          systemInstruction,
+          maxOutputTokens: 8000
+        }
+      });
+
+      for await (const chunk of responseStream) {
+        if (chunk.text) {
+          yield chunk.text;
+        }
       }
     }
   } catch (error) {
-    logger.error({ err: error.message }, 'Gemini streaming failed.');
-    // Yield a human-readable error message instead of crashing
+    logger.error({ err: error.message }, 'AI streaming failed.');
     yield `I encountered a temporary issue connecting to the AI service. Please try again in a moment.`;
   }
 };

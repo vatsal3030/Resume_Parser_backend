@@ -1,15 +1,5 @@
-import { GoogleGenAI } from '@google/genai';
 import logger from '../config/logger.js';
 import { generateAI } from '../providers/ai.provider.js';
-
-// Configuration (Kept for chatWithCopilot streaming)
-const defaultModel = process.env.GEMINI_MODELS || 'gemini-2.5-flash';
-const useOpenRouter = process.env.USE_OPENROUTER === 'true';
-
-// Initialize Gemini (Direct)
-const gemini = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY
-});
 
 // ============================================================================
 // Specialized Prompts (The "Career Tools")
@@ -92,19 +82,54 @@ ${jobDescription}
 };
 
 export const generateMockInterview = async (resumeText, targetRole, modelId = null) => {
-  const systemInstruction = `You are an expert technical interviewer at a top company. Output ONLY a raw JSON object.`;
+  const systemInstruction = `You are an expert technical interviewer at a top tech company. Output ONLY a raw JSON object.`;
   const prompt = `
-Based on the candidate's resume and their target role (${targetRole}), generate a mock interview.
-Return a JSON object containing an array called "questions". Each item in the array should be an object with:
-1. "type": "technical", "behavioral", or "situational"
-2. "question": The interview question.
-3. "context": Why you are asking this (based on a specific thing in their resume).
-4. "expectedAnswerGuidance": Key points the candidate should cover in a good answer.
+Based on the candidate's resume and their target role (${targetRole}), generate a comprehensive 4-round mock interview.
+Return a JSON object containing an array called "rounds". 
 
-Generate exactly 5 highly relevant questions.
+Each round should be an object with:
+1. "title": The name of the round (e.g., "Round 1: Aptitude & Logic Puzzles", "Round 2: Technical MCQ", "Round 3: Coding Round", "Round 4: Behavioral & HR")
+2. "type": "aptitude", "mcq", "coding", or "behavioral"
+3. "questions": An array of exactly 3 questions for this round.
+
+Each question object must have:
+- "id": A unique string ID (e.g., "r1_q1")
+- "question": The actual question text.
+- "context": (Optional) Why you are asking this, or context for a puzzle/coding problem.
+- "options": (Required ONLY for "mcq" round) An array of 4 string options for the multiple choice question.
+- "expectedAnswerGuidance": Key points the candidate should cover to get full points (or the correct option for MCQ).
+
+Make the aptitude round contain logic puzzles or math questions. 
+Make the MCQ round contain tricky technical multiple-choice questions related to their skills.
+Make the coding round contain DSA or system design questions based on their resume. 
+Make the behavioral round contain situational questions.
 
 Resume:
 ${resumeText}
+`;
+  return await generateAI({ prompt, systemInstruction, responseFormat: 'json', modelId });
+};
+
+export const gradeMockInterview = async (answers, questions, modelId = null) => {
+  const systemInstruction = `You are a strict but fair technical interviewer grading a mock interview. Output ONLY a raw JSON object.`;
+  const prompt = `
+You are grading a candidate's mock interview. 
+Here are the questions that were asked, along with the expected guidance for full credit:
+${JSON.stringify(questions, null, 2)}
+
+Here are the candidate's answers:
+${JSON.stringify(answers, null, 2)}
+
+Evaluate their performance. Return a JSON object with:
+1. "totalScore": A number out of 100.
+2. "feedbackSummary": A 3-4 sentence general feedback summary.
+3. "rounds": An array corresponding to the rounds they completed. Each round should have:
+   - "title": Round title
+   - "score": Score out of 100 for this round
+   - "questionFeedback": An array of objects for each question in the round containing:
+      - "questionId": The ID of the question
+      - "score": Score out of 10 (0-10)
+      - "feedback": Specific feedback on their answer. What was good, what was missing.
 `;
   return await generateAI({ prompt, systemInstruction, responseFormat: 'json', modelId });
 };
@@ -187,104 +212,4 @@ export const analyzeGitHub = async (githubUsername, modelId = null) => {
   ${JSON.stringify(githubData || "No public data found", null, 2)}
   `;
   return await generateAI({ prompt, systemInstruction, responseFormat: 'json', modelId });
-};
-
-export const chatWithCopilot = async function*(history, newMessage, context = {}) {
-  const systemInstruction = `You are the AI Career Copilot, an expert career advisor and full-stack assistant for the Elevara platform. Keep your answers concise, practical, and helpful.
-
-You have the ability to automatically navigate the user to different tools based on their intent.
-If the user asks to perform an action or you believe one of our tools would perfectly solve their current problem, you MUST include a special action tag in your response.
-
-Here are the tools available and their action tags:
-- [[ACTION:NAV_STUDIO]] - Navigates to the Resume Studio (resume builder/editor).
-- [[ACTION:NAV_TAILOR]] - Navigates to the Resume Tailor (matches resume to a job description).
-- [[ACTION:NAV_COVER_LETTER]] - Navigates to the Cover Letter Generator.
-- [[ACTION:NAV_ROADMAP]] - Navigates to the Career Roadmap Generator (skill gap analysis).
-- [[ACTION:NAV_MOCK_INTERVIEW]] - Navigates to the Mock Interview Simulator.
-
-If you decide to trigger an action, say something briefly to confirm, and append the exact tag at the very end of your response.
-Example: "I can help you tailor your resume for a Software Engineer role. Let me take you to the Tailor tool now! [[ACTION:NAV_TAILOR]]"
-
-User Context:
-- Current Page Path: ${context.pathname || 'Unknown'}
-`;
-  
-  let openRouterFailed = false;
-  if (useOpenRouter) {
-    try {
-      const messages = [
-        { role: 'system', content: systemInstruction },
-        ...history.map(m => ({ role: m.role, content: m.content })),
-        { role: 'user', content: newMessage }
-      ];
-
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          'Content-Type': 'application/json',
-          'HTTP-Referer': 'http://localhost:3000',
-          'X-Title': 'Elevara',
-        },
-        body: JSON.stringify({
-          model: process.env.OPENROUTER_MODEL || 'google/gemini-2.5-flash',
-          messages,
-          stream: true
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error(`OpenRouter API error: ${response.statusText}`);
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n').filter(line => line.trim() !== '');
-        for (const line of lines) {
-          if (line === 'data: [DONE]') return;
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              if (data.choices && data.choices[0].delta && data.choices[0].delta.content) {
-                yield data.choices[0].delta.content;
-              }
-            } catch (e) {
-              // Ignore parse errors on partial streams
-            }
-          }
-        }
-      }
-      return; // Return early if successful
-    } catch (e) {
-      logger.warn({ err: e.message }, 'Agent AI: OpenRouter Stream failed. Attempting Gemini Direct fallback.');
-      openRouterFailed = true;
-    }
-  } 
-  
-  if (!useOpenRouter || openRouterFailed) {
-    // Native Gemini Stream — use generateContentStream (correct SDK method)
-    // Build the full conversation as a single prompt since @google/genai
-    // does not expose a chat().sendMessageStream() method.
-    let fullPrompt = `${systemInstruction}\n\n`;
-    for (const msg of history) {
-      const label = msg.role === 'assistant' ? 'Assistant' : 'User';
-      fullPrompt += `${label}: ${msg.content}\n`;
-    }
-    fullPrompt += `User: ${newMessage}\nAssistant:`;
-
-    const responseStream = await gemini.models.generateContentStream({
-      model: defaultModel,
-      contents: fullPrompt,
-    });
-    
-    for await (const chunk of responseStream) {
-      if (chunk.text) {
-        yield chunk.text;
-      }
-    }
-  }
 };

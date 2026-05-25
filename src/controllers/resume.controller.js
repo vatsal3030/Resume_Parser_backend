@@ -94,8 +94,16 @@ export const uploadResume = async (req, res) => {
   }
 };
 
+import redis from '../config/redis.js';
+
 export const getResumes = async (req, res) => {
   try {
+    const cacheKey = `resumes:${req.user.id}`;
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      return res.json(JSON.parse(cached));
+    }
+
     const documents = await prisma.document.findMany({
       where: { userId: req.user.id, type: 'RESUME' },
       select: {
@@ -107,6 +115,8 @@ export const getResumes = async (req, res) => {
       },
       orderBy: { createdAt: 'desc' }
     });
+
+    await redis.set(cacheKey, JSON.stringify(documents), 'EX', 60);
     res.json(documents);
   } catch (err) {
     res.status(500).json({ error: err.message });

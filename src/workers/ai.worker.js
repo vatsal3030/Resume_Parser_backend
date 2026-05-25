@@ -8,6 +8,7 @@ import {
   tailorResume, 
   generateCoverLetter, 
   generateMockInterview,
+  gradeMockInterview,
   generateRoadmap,
   generatePortfolio,
   analyzeGitHub
@@ -27,13 +28,14 @@ logger.info(`Starting AI Worker for queue: ${AI_QUEUE_NAME}`);
  * Maps job types to human-readable labels for notifications & events.
  */
 const JOB_TYPE_LABELS = {
-  PARSE_RESUME: { label: 'Resume Analysis', event: 'RESUME_ANALYZED', icon: '📄', toolType: 'RESUME_ANALYSIS', url: '/dashboard/studio' },
+  PARSE_RESUME: { label: 'Resume Analysis', event: 'RESUME_ANALYZED', icon: '📄', toolType: 'RESUME_ANALYSIS', url: '/dashboard/analyze' },
   TAILOR_RESUME: { label: 'Resume Tailoring', event: 'RESUME_TAILORED', icon: '✂️', toolType: 'TAILOR', url: '/dashboard/tools/tailor' },
   GENERATE_COVER_LETTER: { label: 'Cover Letter', event: 'COVER_LETTER_GENERATED', icon: '✉️', toolType: 'COVER_LETTER', url: '/dashboard/tools/cover-letter' },
   GENERATE_MOCK_INTERVIEW: { label: 'Mock Interview', event: 'MOCK_INTERVIEW_GENERATED', icon: '🎤', toolType: 'MOCK_INTERVIEW', url: '/dashboard/tools/mock-interview' },
   GENERATE_ROADMAP: { label: 'Career Roadmap', event: 'ROADMAP_GENERATED', icon: '🗺️', toolType: 'ROADMAP', url: '/dashboard/tools/roadmap' },
   GENERATE_PORTFOLIO: { label: 'Portfolio', event: 'PORTFOLIO_GENERATED', icon: '🌐', toolType: 'PORTFOLIO', url: '/dashboard/tools/portfolio' },
   ANALYZE_GITHUB: { label: 'GitHub Analysis', event: 'GITHUB_ANALYZED', icon: '🐙', toolType: 'GITHUB_ANALYSIS', url: '/dashboard/tools/github' },
+  GRADE_MOCK_INTERVIEW: { label: 'Interview Graded', event: 'MOCK_INTERVIEW_GRADED', icon: '📝', toolType: 'MOCK_INTERVIEW_SCORE', url: '/dashboard/tools/mock-interview' },
 };
 
 /**
@@ -174,6 +176,11 @@ export const aiWorker = new Worker(
 
         case 'GENERATE_MOCK_INTERVIEW':
           generationResult = await generateMockInterview(job.data.resumeText, job.data.targetRole, job.data.modelId);
+          result = generationResult.result;
+          break;
+
+        case 'GRADE_MOCK_INTERVIEW':
+          generationResult = await gradeMockInterview(job.data.answers, job.data.questions, job.data.modelId);
           result = generationResult.result;
           break;
 

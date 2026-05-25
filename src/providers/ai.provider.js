@@ -68,7 +68,8 @@ const callOpenRouter = async (model, prompt, systemInstruction, responseFormat) 
     const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
       model: model,
       messages,
-      max_tokens: 4000
+      max_tokens: 4000,
+      response_format: responseFormat === 'json' ? { type: "json_object" } : undefined
     }, {
       headers: {
         'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
@@ -93,10 +94,30 @@ const callOpenRouter = async (model, prompt, systemInstruction, responseFormat) 
       if (jsonMatch) {
         content = jsonMatch[1];
       } else {
-        // Strip out generic markdown code blocks
         const genericMatch = content.match(/```\n([\s\S]*?)\n```/);
         if (genericMatch) {
           content = genericMatch[1];
+        } else {
+          // Bracket matching fallback if wrapped in conversational text
+          const firstBrace = content.indexOf('{');
+          const lastBrace = content.lastIndexOf('}');
+          const firstBracket = content.indexOf('[');
+          const lastBracket = content.lastIndexOf(']');
+          
+          let startIdx = -1;
+          let endIdx = -1;
+          
+          if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
+            startIdx = firstBrace;
+            endIdx = lastBrace;
+          } else if (firstBracket !== -1) {
+            startIdx = firstBracket;
+            endIdx = lastBracket;
+          }
+          
+          if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+            content = content.substring(startIdx, endIdx + 1);
+          }
         }
       }
       return JSON.parse(content);
@@ -160,7 +181,7 @@ export const generateAI = async ({
         return { result, provider: 'gemini', model: DIRECT_GEMINI_FALLBACK };
       } catch (fallbackError) {
         logger.error({ err: fallbackError.message }, 'Fallback AI provider also failed.');
-        throw new Error('All AI providers failed.');
+        throw new Error(`All AI providers failed. Last error: ${fallbackError.message}`);
       }
     } else {
       // If Direct Gemini failed, and OpenRouter is available, try OpenRouter free
@@ -171,7 +192,7 @@ export const generateAI = async ({
            return { result, provider: 'openrouter', model: DEFAULT_FREE_MODEL };
          } catch (fallbackError) {
            logger.error({ err: fallbackError.message }, 'Fallback AI provider also failed.');
-           throw new Error('All AI providers failed.');
+           throw new Error(`All AI providers failed. Last error: ${fallbackError.message}`);
          }
       }
       throw error;

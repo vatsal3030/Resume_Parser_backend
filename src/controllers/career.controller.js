@@ -1,6 +1,6 @@
 import prisma from '../config/db.js';
 import { aiQueue } from '../queues/ai.queue.js';
-import { rewriteBullet } from '../services/ai.service.js';
+import { rewriteBullet, gradeMockInterview } from '../services/ai.service.js';
 import logger from '../config/logger.js';
 
 // Synchronous small AI tasks
@@ -141,6 +141,22 @@ export const requestMockInterview = async (req, res) => {
   } catch (error) {
     logger.error({ err: error }, 'Failed to queue mock interview job');
     res.status(500).json({ error: 'Failed to start mock interview generation' });
+  }
+};
+
+export const requestGradeInterview = async (req, res) => {
+  try {
+    const { answers, questions, modelId } = req.body;
+    
+    if (!answers || !questions) {
+      return res.status(400).json({ error: 'Answers and questions are required' });
+    }
+
+    const result = await gradeMockInterview(answers, questions, modelId);
+    res.json(result);
+  } catch (error) {
+    logger.error({ err: error }, 'Failed to grade interview');
+    res.status(500).json({ error: 'Failed to grade interview' });
   }
 };
 

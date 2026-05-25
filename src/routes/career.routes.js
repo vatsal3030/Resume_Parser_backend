@@ -12,7 +12,8 @@ import {
   requestMockInterview,
   requestRoadmap,
   requestPortfolio,
-  requestGitHubAnalysis
+  requestGitHubAnalysis,
+  requestGradeInterview
 } from '../controllers/career.controller.js';
 
 const router = express.Router();
@@ -50,6 +51,12 @@ router.post('/mock-interview',
   protect, strictRateLimiter, enforceQuota,
   creditGuard('GENERATE_MOCK_INTERVIEW'), toolRateLimit('GENERATE_MOCK_INTERVIEW'),
   requireFields('resumeId', 'targetRole'), requestMockInterview
+);
+
+router.post('/grade-interview',
+  protect, strictRateLimiter, enforceQuota,
+  creditGuard('GRADE_MOCK_INTERVIEW'), toolRateLimit('GRADE_MOCK_INTERVIEW'),
+  requireFields('answers', 'questions'), requestGradeInterview
 );
 
 router.post('/roadmap',

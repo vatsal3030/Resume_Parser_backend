@@ -56,8 +56,16 @@ export const getTemplate = async (req, res) => {
  * GET /studio/resumes
  * List all studio resumes for the current user.
  */
+import redis from '../config/redis.js';
+
 export const listStudioResumes = async (req, res) => {
   try {
+    const cacheKey = `studio_resumes:${req.user.id}`;
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      return res.json(JSON.parse(cached));
+    }
+
     const resumes = await prisma.studioResume.findMany({
       where: { userId: req.user.id },
       orderBy: { updatedAt: 'desc' },
@@ -75,6 +83,8 @@ export const listStudioResumes = async (req, res) => {
         },
       },
     });
+
+    await redis.set(cacheKey, JSON.stringify(resumes), 'EX', 60);
     res.json(resumes);
   } catch (error) {
     logger.error({ err: error }, 'Failed to list studio resumes');

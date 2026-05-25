@@ -30,7 +30,7 @@ export const handleChat = async (req, res) => {
 
     // Stream final response to frontend
     let fullText = '';
-    const stream = await streamFinalResponse(messages);
+    const stream = await streamFinalResponse(messages, modelId);
     
     for await (const chunk of stream) {
       if (chunk) {

@@ -1,6 +1,6 @@
 import prisma from '../config/db.js';
 import { aiQueue } from '../queues/ai.queue.js';
-import { rewriteBullet, gradeMockInterview } from '../services/ai.service.js';
+import { rewriteBullet, gradeMockInterview, generateGitHubReadme } from '../services/ai.service.js';
 import logger from '../config/logger.js';
 
 // Synchronous small AI tasks
@@ -270,5 +270,31 @@ export const requestGitHubAnalysis = async (req, res) => {
   } catch (error) {
     logger.error({ err: error }, 'Failed to queue github analysis job');
     res.status(500).json({ error: 'Failed to start github analysis' });
+  }
+};
+
+export const requestGitHubReadme = async (req, res) => {
+  try {
+    const { githubUsername, analysisData, modelId } = req.body;
+
+    if (!githubUsername) {
+      return res.status(400).json({ error: 'GitHub username is required' });
+    }
+
+    if (!analysisData) {
+      return res.status(400).json({ error: 'Analysis data is required. Please analyze the profile first.' });
+    }
+
+    const result = await generateGitHubReadme(githubUsername, analysisData, modelId);
+    
+    // The result may be wrapped in { result: ... } or be the raw text
+    const readmeText = typeof result === 'object' && result.result 
+      ? (typeof result.result === 'string' ? result.result : JSON.stringify(result.result))
+      : (typeof result === 'string' ? result : JSON.stringify(result));
+
+    res.json({ readme: readmeText });
+  } catch (error) {
+    logger.error({ err: error }, 'Failed to generate GitHub README');
+    res.status(500).json({ error: 'Failed to generate GitHub README' });
   }
 };

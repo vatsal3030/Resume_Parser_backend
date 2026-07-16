@@ -365,11 +365,24 @@ const executeAgentTool = async (userId, toolName, args) => {
  * Main Agent Loop runner
  */
 export const runAgentLoop = async (userId, message, context = {}) => {
-  // Fetch active conversation
-  let conversation = await prisma.conversation.findFirst({
-    where: { userId, deletedAt: null },
-    include: { messages: { orderBy: { createdAt: 'asc' } } }
-  });
+  // Fetch active conversation — respect requested conversationId
+  let conversation = null;
+  
+  if (context.conversationId) {
+    conversation = await prisma.conversation.findFirst({
+      where: { id: context.conversationId, userId, deletedAt: null },
+      include: { messages: { orderBy: { createdAt: 'asc' } } }
+    });
+  }
+  
+  if (!conversation) {
+    conversation = await prisma.conversation.findFirst({
+      where: { userId, deletedAt: null },
+      orderBy: { updatedAt: 'desc' },
+      include: { messages: { orderBy: { createdAt: 'asc' } } }
+    });
+  }
+  
   if (!conversation) {
     conversation = await prisma.conversation.create({
       data: { userId, title: 'Copilot Chat' }

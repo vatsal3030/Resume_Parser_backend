@@ -213,3 +213,36 @@ export const analyzeGitHub = async (githubUsername, modelId = null) => {
   `;
   return await generateAI({ prompt, systemInstruction, responseFormat: 'json', modelId });
 };
+
+export const generateGitHubReadme = async (githubUsername, analysisData, modelId = null) => {
+  const systemInstruction = `You are an expert developer advocate and technical writer. Generate a stunning, professional GitHub profile README.md file. Return ONLY the raw Markdown content — no JSON wrapping, no code fences around the entire output. The README should be ready to paste directly into a GitHub profile repository.`;
+  const prompt = `
+Generate a professional and visually appealing GitHub profile README.md for the user "@${githubUsername}".
+
+Use the following analysis data to personalize the README:
+- Developer Archetype: ${analysisData.developerArchetype || 'Developer'}
+- Overall Score: ${analysisData.overallScore || 'N/A'}/100
+- Top Languages: ${JSON.stringify(analysisData.topLanguages || [])}
+- Top Repos: ${JSON.stringify(analysisData.topRepos || [])}
+- Strengths: ${JSON.stringify(analysisData.strengths || [])}
+- Areas for Growth: ${JSON.stringify(analysisData.areasForGrowth || [])}
+- Stack Combinations: ${JSON.stringify(analysisData.stackCombinations || [])}
+- Code Complexity: ${analysisData.codeComplexity || 'Medium'}
+- Commit Style: ${analysisData.commitStyle || 'Active'}
+
+Requirements:
+1. Start with an engaging header using the developer archetype as a tagline
+2. Include a brief "About Me" section based on their strengths and stack
+3. Add a "Tech Stack" section with relevant emoji badges for their top languages
+4. Include a "Featured Projects" section highlighting their top repos with descriptions
+5. Add GitHub stats using shields.io badges (e.g., profile views counter, GitHub stats card, top languages card, streak stats). Use the actual username "${githubUsername}" in all badge URLs.
+6. Include a fun "Git Roast" or fun fact section
+7. Add social/connect section placeholders
+8. Use appropriate emojis, headers, and formatting
+9. Keep it concise but impactful — around 60-100 lines of markdown
+10. Use GitHub-flavored markdown only
+
+The generated README should be modern, clean, and stand out.
+  `;
+  return await generateAI({ prompt, systemInstruction, responseFormat: 'text', modelId });
+};

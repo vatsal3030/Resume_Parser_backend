@@ -13,7 +13,8 @@ import {
   requestRoadmap,
   requestPortfolio,
   requestGitHubAnalysis,
-  requestGradeInterview
+  requestGradeInterview,
+  requestGitHubReadme
 } from '../controllers/career.controller.js';
 
 const router = express.Router();
@@ -75,6 +76,12 @@ router.post('/github',
   protect, strictRateLimiter, enforceQuota,
   creditGuard('ANALYZE_GITHUB'), toolRateLimit('ANALYZE_GITHUB'),
   requireFields('githubUsername'), requestGitHubAnalysis
+);
+
+router.post('/github-readme',
+  protect, strictRateLimiter, enforceQuota,
+  creditGuard('GENERATE_GITHUB_README'), toolRateLimit('GENERATE_GITHUB_README'),
+  requireFields('githubUsername', 'analysisData'), requestGitHubReadme
 );
 
 export default router;

@@ -103,6 +103,28 @@ export const TOOL_REGISTRY = {
     category: 'micro',
     isAsync: false,
   },
+  GENERATE_GITHUB_README: {
+    id: 'GENERATE_GITHUB_README',
+    name: 'GitHub README',
+    description: 'Generate profile README from analysis',
+    icon: 'FileText',
+    color: 'bg-green-300',
+    creditCost: 1,
+    rateLimit: { maxPerHour: 10, maxPerDay: 30 },
+    category: 'generation',
+    isAsync: false,
+  },
+  GRADE_MOCK_INTERVIEW: {
+    id: 'GRADE_MOCK_INTERVIEW',
+    name: 'Interview Grading',
+    description: 'Grade mock interview answers',
+    icon: 'CheckCircle',
+    color: 'bg-brutal-mint',
+    creditCost: 2,
+    rateLimit: { maxPerHour: 10, maxPerDay: 30 },
+    category: 'micro',
+    isAsync: false,
+  },
 };
 
 /**

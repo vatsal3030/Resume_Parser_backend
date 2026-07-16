@@ -6,7 +6,7 @@ import { generateAI } from '../providers/ai.provider.js';
 // ============================================================================
 
 export const extractDetailsFromPDF = async (resumeText, modelId = null) => {
-  const systemInstruction = `You are an expert technical recruiter and resume reviewer. Analyze the provided resume document. Return ONLY a raw JSON object, without markdown \`\`\`json blocks.`;
+  const systemInstruction = `You are an expert technical recruiter and resume reviewer who works across ALL industries and domains — not just tech/CSE. Analyze the provided resume document. Return ONLY a raw JSON object, without markdown \`\`\`json blocks.`;
   
   const prompt = `
 Extract the following details and strictly format your output as a JSON object:
@@ -16,12 +16,20 @@ Extract the following details and strictly format your output as a JSON object:
 4. "linkedin": LinkedIn URL. (string or null)
 5. "github": GitHub URL. (string or null)
 6. "atsScore": A simulated ATS score out of 100. (number)
-7. "jobFitScore": A general job fit score out of 100 for a general tech role. (number)
+7. "jobFitScore": A general job fit score out of 100 for roles matching their domain. (number)
 8. "summary": A professional summary (3-4 sentences). (string)
 9. "strengths": Array of key strengths. (Array of strings)
 10. "weaknesses": Array of areas of improvement. (Array of strings)
 11. "suggestions": Array of actionable advice. (Array of strings)
 12. "recommendedDoc": An improved, reorganized version of their resume in Markdown format.
+13. "detectedDomain": The candidate's primary domain/field detected from education, skills, and experience (e.g., "Computer Science", "Mechanical Engineering", "Electrical Engineering", "Civil Engineering", "MBA / Business Administration", "Finance", "Marketing", "UI/UX Design", "Data Science", "Medical / Healthcare", "Law", "Architecture", "Chemical Engineering", etc.) (string)
+14. "roleFitExplanation": A 2-3 sentence explanation of why the candidate fits (or doesn't fit) their apparent target role, what strengths they bring, and what gaps exist. (string)
+15. "suggestedRoles": Array of 3-5 best-fit job roles for this candidate based on their resume. Each should be an object with:
+    - "role": Job title (string)
+    - "matchPercentage": How well their resume matches this role (number, 0-100)
+    - "reasoning": Brief one-line reason (string)
+
+IMPORTANT: The candidate may come from ANY domain — engineering, business, arts, science, medical, law, etc. Do NOT assume they are from Computer Science. Detect their actual domain from their education section, skills, and work experience.
 
 Here is the extracted text from the resume:
 ${resumeText}
@@ -82,27 +90,46 @@ ${jobDescription}
 };
 
 export const generateMockInterview = async (resumeText, targetRole, modelId = null) => {
-  const systemInstruction = `You are an expert technical interviewer at a top tech company. Output ONLY a raw JSON object.`;
+  const systemInstruction = `You are an expert interviewer who has conducted 10,000+ interviews across all industries and domains. You personalize interviews based on the candidate's actual background from their resume. Output ONLY a raw JSON object.`;
   const prompt = `
-Based on the candidate's resume and their target role (${targetRole}), generate a comprehensive 4-round mock interview.
-Return a JSON object containing an array called "rounds". 
+IMPORTANT: First analyze the candidate's resume to detect their primary domain/field (e.g., Computer Science, Mechanical Engineering, Electrical Engineering, Civil Engineering, MBA, Finance, Marketing, Design, Medical, Law, Data Science, etc.). The interview MUST be tailored to their actual domain, not assumed to be CSE/IT.
 
-Each round should be an object with:
-1. "title": The name of the round (e.g., "Round 1: Aptitude & Logic Puzzles", "Round 2: Technical MCQ", "Round 3: Coding Round", "Round 4: Behavioral & HR")
-2. "type": "aptitude", "mcq", "coding", or "behavioral"
-3. "questions": An array of exactly 3 questions for this round.
+Based on the candidate's resume and their target role (${targetRole}), generate a comprehensive 6-round mock interview simulation.
+
+Return a JSON object with:
+- "detectedDomain": The candidate's primary domain/field detected from their resume
+- "interviewLevel": "Entry" | "Mid" | "Senior" based on experience
+- "rounds": Array of 6 rounds
+
+Each round object must have:
+1. "title": Descriptive round title (e.g., "Round 1: Aptitude & Logical Reasoning")
+2. "type": One of "aptitude", "mcq", "technical", "coding", "project_discussion", "behavioral"
+3. "description": 1-line description of what this round tests
+4. "questions": Array of exactly 5 questions
+
+Round structure:
+- Round 1 (aptitude): Logic puzzles, math reasoning, pattern recognition, probability — universal for all domains
+- Round 2 (mcq): Domain-specific technical MCQs with 4 options each (e.g., CS: OS/DBMS/Networks, Mech: Thermodynamics/Strength of Materials, MBA: Case studies)
+- Round 3 (coding/technical): For tech roles: DSA problems. For non-tech: domain-specific problem-solving (case studies, calculations, design problems)
+- Round 4 (technical): Core subject deep-dive based on their resume skills and domain (system design for senior tech, domain theory for others)
+- Round 5 (project_discussion): Questions about their specific projects mentioned in resume, probing depth of understanding
+- Round 6 (behavioral): HR round with STAR-method situational questions, conflict resolution, leadership, teamwork
 
 Each question object must have:
-- "id": A unique string ID (e.g., "r1_q1")
-- "question": The actual question text.
-- "context": (Optional) Why you are asking this, or context for a puzzle/coding problem.
-- "options": (Required ONLY for "mcq" round) An array of 4 string options for the multiple choice question.
-- "expectedAnswerGuidance": Key points the candidate should cover to get full points (or the correct option for MCQ).
+- "id": Unique string ID (e.g., "r1_q1")
+- "question": The actual question text (be specific and realistic)
+- "difficulty": "Easy" | "Medium" | "Hard"
+- "timeMinutes": Suggested time to answer (1-15 minutes)
+- "context": Why this question is being asked / what it tests
+- "options": (Required ONLY for "mcq" type) Array of exactly 4 string options
+- "expectedAnswerGuidance": Detailed key points for a perfect answer (or correct option for MCQ)
 
-Make the aptitude round contain logic puzzles or math questions. 
-Make the MCQ round contain tricky technical multiple-choice questions related to their skills.
-Make the coding round contain DSA or system design questions based on their resume. 
-Make the behavioral round contain situational questions.
+CRITICAL RULES:
+1. Questions MUST be personalized to the candidate's actual skills, projects, and experience from their resume
+2. For non-CSE candidates, do NOT ask coding/DSA questions — ask domain-relevant problem-solving instead
+3. MCQ options should have plausible distractors, not obviously wrong answers
+4. Difficulty should progressively increase within each round
+5. Project discussion questions should reference SPECIFIC projects from their resume
 
 Resume:
 ${resumeText}

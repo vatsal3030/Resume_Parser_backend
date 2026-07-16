@@ -9,11 +9,11 @@ import logger from '../config/logger.js';
  */
 export const getDSAStats = async (req, res) => {
   try {
-    const { leetcode, codeforces, gfg } = req.query;
+    const { leetcode, codeforces, gfg, codechef, hackerrank } = req.query;
     
     // If query params provided, fetch those directly
-    if (leetcode || codeforces || gfg) {
-      const stats = await fetchAllDSAStats({ leetcode, codeforces, gfg });
+    if (leetcode || codeforces || gfg || codechef || hackerrank) {
+      const stats = await fetchAllDSAStats({ leetcode, codeforces, gfg, codechef, hackerrank });
       return res.json(stats);
     }
 
@@ -23,7 +23,7 @@ export const getDSAStats = async (req, res) => {
     });
 
     const dsaUsernames = profile?.dsaPlatforms || {};
-    if (!dsaUsernames.leetcode && !dsaUsernames.codeforces && !dsaUsernames.gfg) {
+    if (!dsaUsernames.leetcode && !dsaUsernames.codeforces && !dsaUsernames.gfg && !dsaUsernames.codechef && !dsaUsernames.hackerrank) {
       return res.json({ platforms: [], aggregated: { totalSolved: 0, platformCount: 0, activePlatforms: [] } });
     }
 
@@ -41,16 +41,16 @@ export const getDSAStats = async (req, res) => {
  */
 export const saveDSAUsernames = async (req, res) => {
   try {
-    const { leetcode, codeforces, gfg } = req.body;
+    const { leetcode, codeforces, gfg, codechef, hackerrank } = req.body;
 
     await prisma.profile.upsert({
       where: { userId: req.user.id },
       update: {
-        dsaPlatforms: { leetcode: leetcode || null, codeforces: codeforces || null, gfg: gfg || null }
+        dsaPlatforms: { leetcode: leetcode || null, codeforces: codeforces || null, gfg: gfg || null, codechef: codechef || null, hackerrank: hackerrank || null }
       },
       create: {
         userId: req.user.id,
-        dsaPlatforms: { leetcode: leetcode || null, codeforces: codeforces || null, gfg: gfg || null }
+        dsaPlatforms: { leetcode: leetcode || null, codeforces: codeforces || null, gfg: gfg || null, codechef: codechef || null, hackerrank: hackerrank || null }
       }
     });
 

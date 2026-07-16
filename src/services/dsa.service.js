@@ -133,13 +133,15 @@ export async function fetchCodeforcesStats(handle) {
   if (cached) return cached;
 
   try {
-    const [infoRes, ratingRes] = await Promise.allSettled([
+    const [infoRes, ratingRes, statusRes] = await Promise.allSettled([
       fetch(`https://codeforces.com/api/user.info?handles=${handle}`, { signal: AbortSignal.timeout(10000) }),
-      fetch(`https://codeforces.com/api/user.rating?handle=${handle}`, { signal: AbortSignal.timeout(10000) })
+      fetch(`https://codeforces.com/api/user.rating?handle=${handle}`, { signal: AbortSignal.timeout(10000) }),
+      fetch(`https://codeforces.com/api/user.status?handle=${handle}&from=1&count=10000`, { signal: AbortSignal.timeout(15000) })
     ]);
 
     let userInfo = null;
     let ratingHistory = [];
+    let totalSolved = 0;
 
     if (infoRes.status === 'fulfilled' && infoRes.value.ok) {
       const data = await infoRes.value.json();
@@ -155,6 +157,20 @@ export async function fetchCodeforcesStats(handle) {
       }
     }
 
+    // Count unique accepted problems from submissions
+    if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
+      const data = await statusRes.value.json();
+      if (data.status === 'OK' && data.result) {
+        const solvedSet = new Set();
+        for (const sub of data.result) {
+          if (sub.verdict === 'OK' && sub.problem) {
+            solvedSet.add(`${sub.problem.contestId}-${sub.problem.index}`);
+          }
+        }
+        totalSolved = solvedSet.size;
+      }
+    }
+
     if (!userInfo) {
       return { platform: 'Codeforces', username: handle, available: false, error: 'User not found' };
     }
@@ -162,6 +178,7 @@ export async function fetchCodeforcesStats(handle) {
     const result = {
       platform: 'Codeforces',
       username: handle,
+      totalSolved,
       rating: userInfo.rating || 0,
       maxRating: userInfo.maxRating || 0,
       rank: userInfo.rank || 'unrated',
@@ -281,21 +298,108 @@ export async function fetchGFGStats(username) {
 }
 
 /**
+ * Fetch CodeChef stats via public API.
+ */
+export async function fetchCodeChefStats(username) {
+  if (!username) return null;
+  const cacheKey = `codechef:${username}`;
+  const cached = getCached(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const res = await fetch(`https://codechef-api.vercel.app/handle/${username}`, {
+      signal: AbortSignal.timeout(10000)
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data && !data.error) {
+        const result = {
+          platform: 'CodeChef',
+          username,
+          totalSolved: data.currentRating ? null : 0,
+          rating: data.currentRating || 0,
+          maxRating: data.highestRating || 0,
+          stars: data.stars || '★',
+          globalRank: data.globalRank || null,
+          countryRank: data.countryRank || null,
+          available: true
+        };
+        // Try to get problems solved from fully_solved count
+        if (data.heatMap) {
+          let count = 0;
+          for (const entry of data.heatMap) {
+            count += entry.value || 0;
+          }
+          result.totalSolved = count;
+        }
+        setCache(cacheKey, result);
+        return result;
+      }
+    }
+
+    return { platform: 'CodeChef', username, available: false, error: 'User not found' };
+  } catch (error) {
+    logger.warn({ err: error, username }, 'Failed to fetch CodeChef stats');
+    return { platform: 'CodeChef', username, available: false, error: error.message };
+  }
+}
+
+/**
+ * Fetch HackerRank basic profile info.
+ */
+export async function fetchHackerRankStats(username) {
+  if (!username) return null;
+  const cacheKey = `hackerrank:${username}`;
+  const cached = getCached(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const res = await fetch(`https://www.hackerrank.com/rest/hackers/${username}/scores_elo`, {
+      signal: AbortSignal.timeout(8000),
+      headers: { 'Accept': 'application/json' }
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        const result = {
+          platform: 'HackerRank',
+          username,
+          totalSolved: null,
+          badges: data.map(d => ({ name: d.name, score: d.score })),
+          available: true
+        };
+        setCache(cacheKey, result);
+        return result;
+      }
+    }
+
+    return { platform: 'HackerRank', username, available: false, error: 'User not found' };
+  } catch (error) {
+    logger.warn({ err: error, username }, 'Failed to fetch HackerRank stats');
+    return { platform: 'HackerRank', username, available: false, error: error.message };
+  }
+}
+
+/**
  * Fetch all platform stats in parallel.
  */
 export async function fetchAllDSAStats(usernames) {
-  const { leetcode, codeforces, gfg } = usernames;
+  const { leetcode, codeforces, gfg, codechef, hackerrank } = usernames;
 
-  const [leetcodeStats, codeforcesStats, gfgStats] = await Promise.allSettled([
+  const results = await Promise.allSettled([
     leetcode ? fetchLeetCodeStats(leetcode) : null,
     codeforces ? fetchCodeforcesStats(codeforces) : null,
     gfg ? fetchGFGStats(gfg) : null,
+    codechef ? fetchCodeChefStats(codechef) : null,
+    hackerrank ? fetchHackerRankStats(hackerrank) : null,
   ]);
 
   const platforms = [];
-  if (leetcodeStats.status === 'fulfilled' && leetcodeStats.value) platforms.push(leetcodeStats.value);
-  if (codeforcesStats.status === 'fulfilled' && codeforcesStats.value) platforms.push(codeforcesStats.value);
-  if (gfgStats.status === 'fulfilled' && gfgStats.value) platforms.push(gfgStats.value);
+  for (const r of results) {
+    if (r.status === 'fulfilled' && r.value) platforms.push(r.value);
+  }
 
   // Calculate aggregated stats
   const totalSolved = platforms.reduce((sum, p) => sum + (p.totalSolved || 0), 0);

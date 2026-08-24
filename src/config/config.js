@@ -17,8 +17,8 @@ export const config = {
   
   // AI Provider Settings
   useOpenRouter: getBool(process.env.USE_OPENROUTER, false),
-  openRouterModel: process.env.OPENROUTER_MODEL || 'google/gemini-2.5-flash',
-  geminiModel: process.env.GEMINI_MODELS || 'gemini-2.5-flash',
+  openRouterModel: process.env.OPENROUTER_MODEL || 'google/gemma-4-26b-a4b-it:free',
+  geminiModel: process.env.GEMINI_MODELS || 'gemini-2.0-flash',
   
   // Feature Flags
   features: {
@@ -33,6 +33,6 @@ export const config = {
   limits: {
     maxUploadSizeMB: parseInt(process.env.MAX_UPLOAD_SIZE_MB || '5', 10),
     maxGenerationsPerDay: parseInt(process.env.MAX_GENERATIONS_PER_DAY || '500', 10),
-    maxConcurrentJobs: 1, // Hardcoded for safety
+    maxConcurrentJobs: parseInt(process.env.MAX_CONCURRENT_JOBS || '3', 10),
   }
 };

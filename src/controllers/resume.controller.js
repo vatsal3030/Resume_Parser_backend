@@ -2,6 +2,7 @@ import prisma from '../config/db.js';
 import logger from '../config/logger.js';
 import { enqueueAIJob } from '../queues/ai.queue.js';
 import { emitEvent } from '../services/activity.service.js';
+import { safeCacheGet, safeCacheSet, safeCacheDel } from '../config/redis.js';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const pdfParse = require('pdf-parse');
@@ -67,7 +68,8 @@ export const uploadResume = async (req, res) => {
       jobId: aiJob.id,
       userId: user.id,
       originalName: req.file.originalname,
-      resumeText: resumeText
+      resumeText: resumeText,
+      modelId: req.body.modelId || null
     });
 
     logger.info({ jobId: aiJob.id, userId: user.id }, 'Resume queued for processing');
@@ -94,14 +96,12 @@ export const uploadResume = async (req, res) => {
   }
 };
 
-import redis from '../config/redis.js';
-
 export const getResumes = async (req, res) => {
   try {
     const cacheKey = `resumes:${req.user.id}`;
-    const cached = await redis.get(cacheKey);
+    const cached = await safeCacheGet(cacheKey);
     if (cached) {
-      return res.json(JSON.parse(cached));
+      return res.json(typeof cached === 'string' ? JSON.parse(cached) : cached);
     }
 
     const documents = await prisma.document.findMany({
@@ -116,10 +116,11 @@ export const getResumes = async (req, res) => {
       orderBy: { createdAt: 'desc' }
     });
 
-    await redis.set(cacheKey, JSON.stringify(documents), 'EX', 60);
+    await safeCacheSet(cacheKey, JSON.stringify(documents), 60);
     res.json(documents);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    logger.error({ err: err.message, userId: req.user?.id }, 'Failed to fetch resumes');
+    res.status(500).json({ error: 'Failed to fetch resumes from database' });
   }
 };
 

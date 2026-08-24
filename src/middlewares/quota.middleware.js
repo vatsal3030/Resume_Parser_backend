@@ -32,18 +32,21 @@ export const enforceQuota = async (req, res, next) => {
     }
 
     // 2. Check for Concurrent Jobs
-    // We only allow 1 PENDING/PROCESSING job at a time to prevent spamming
+    // Allow parallel jobs up to maxConcurrentJobs (e.g. 3), ignoring stale jobs older than 3 minutes
+    const staleCutoff = new Date(Date.now() - 3 * 60 * 1000);
     const activeJobs = await prisma.aIJob.count({
       where: {
         userId,
-        status: { in: ['PENDING', 'PROCESSING'] }
+        status: { in: ['PENDING', 'PROCESSING'] },
+        createdAt: { gte: staleCutoff }
       }
     });
 
-    if (activeJobs >= config.limits.maxConcurrentJobs) {
-      logger.warn({ userId, activeJobs }, 'User exceeded concurrent job limit');
+    const maxJobs = config.limits.maxConcurrentJobs || 3;
+    if (activeJobs >= maxJobs) {
+      logger.warn({ userId, activeJobs, maxJobs }, 'User exceeded concurrent job limit');
       return res.status(429).json({ 
-        error: 'You already have an AI job running. Please wait for it to complete.' 
+        error: `You have ${activeJobs} AI tasks currently in progress. Please wait for them to finish before starting more.` 
       });
     }
 

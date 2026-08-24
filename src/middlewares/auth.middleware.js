@@ -24,15 +24,30 @@ export const protect = async (req, res, next) => {
         throw new Error('Invalid Supabase token');
     }
 
-    // Ensure user exists in Prisma DB
-    const localUser = await prisma.user.upsert({
-      where: { id: user.id },
-      update: {},
-      create: {
-        id: user.id,
-        email: user.email || 'unknown@example.com'
+    // Ensure user exists in Prisma DB with auto-retry on transient disconnects
+    try {
+      await prisma.user.upsert({
+        where: { id: user.id },
+        update: {},
+        create: {
+          id: user.id,
+          email: user.email || 'unknown@example.com'
+        }
+      });
+    } catch (dbErr) {
+      try {
+        await prisma.user.upsert({
+          where: { id: user.id },
+          update: {},
+          create: {
+            id: user.id,
+            email: user.email || 'unknown@example.com'
+          }
+        });
+      } catch (retryErr) {
+        console.warn('Auth Middleware DB sync warn (proceeding with verified Supabase session):', retryErr.message);
       }
-    });
+    }
 
     req.user = { id: user.id, email: user.email };
     next();

@@ -1,8 +1,8 @@
 import { Worker } from 'bullmq';
-import { createRedisConnection } from '../config/redis.js';
+import { createRedisConnection, isRedisQuotaExceeded } from '../config/redis.js';
 import logger from '../config/logger.js';
 import prisma from '../config/db.js';
-import { AI_QUEUE_NAME } from '../queues/ai.queue.js';
+import { AI_QUEUE_NAME } from '../constants/queue.constants.js';
 import { 
   extractDetailsFromPDF, 
   tailorResume, 
@@ -13,16 +13,14 @@ import {
   generatePortfolio,
   analyzeGitHub
 } from '../services/ai.service.js';
+import { resolveProviderAndModel } from '../providers/ai.provider.js';
 import { recordGeneration } from '../services/generation.ledger.service.js';
 import { emitEvent } from '../services/activity.service.js';
 import { createNotification } from '../services/notification.service.js';
 import { upsertWorkflow, completeWorkflow } from '../services/workflow.service.js';
 import { getCreditCost } from '../config/credits.js';
 import { refundCredits } from '../middlewares/creditGuard.middleware.js';
-
 import { runWithTrace } from '../utils/tracing.js';
-
-logger.info(`Starting AI Worker for queue: ${AI_QUEUE_NAME}`);
 
 /**
  * Maps job types to human-readable labels for notifications & events.
@@ -103,32 +101,24 @@ async function saveToolOutput({ userId, aiJobId, jobName, jobData, result, provi
 }
 
 /**
- * AI Worker — Upstash Free Tier Optimized
+ * Core AI Job Execution Engine
+ * Used by both BullMQ Worker and In-Process Async Queue Fallback.
  */
-export const aiWorker = new Worker(
-  AI_QUEUE_NAME,
-  async (job) => {
-    return runWithTrace({ jobId: job.id }, async () => {
-      const startTime = Date.now();
-      logger.info({ name: job.name }, 'Processing AI Job');
-      
-      // 1. Update job status to PROCESSING in DB
-      await prisma.aIJob.update({
-        where: { id: job.id },
-        data: { status: 'PROCESSING', startedAt: new Date() }
-      });
+export const processAIJob = async (job) => {
+  return runWithTrace({ jobId: job.id }, async () => {
+    const startTime = Date.now();
+    logger.info({ name: job.name, jobId: job.id }, 'Processing AI Job');
+    
+    // 1. Update job status to PROCESSING in DB
+    await prisma.aIJob.update({
+      where: { id: job.id },
+      data: { status: 'PROCESSING', startedAt: new Date() }
+    });
 
     // Determine provider info for ledger (from input payload or defaults)
-    const requestedModelId = job.data.modelId || null;
-    let resolvedProvider = 'openrouter';
-    let resolvedModel = requestedModelId || process.env.OPENROUTER_MODEL || 'google/gemini-2.5-flash';
-    if (requestedModelId === 'gemini-2.5-flash' || requestedModelId === 'gemini-2.5-pro') {
-      resolvedProvider = 'gemini';
-      resolvedModel = requestedModelId;
-    } else if (process.env.USE_OPENROUTER !== 'true') {
-      resolvedProvider = 'gemini';
-      resolvedModel = process.env.GEMINI_MODELS || 'gemini-2.5-flash';
-    }
+    const target = resolveProviderAndModel(job.data?.modelId);
+    let resolvedProvider = target.provider;
+    let resolvedModel = target.model;
 
     try {
       let result;
@@ -241,13 +231,11 @@ export const aiWorker = new Worker(
       logger.info({ jobId: job.id, durationMs }, 'AI Job Completed Successfully');
 
       // =====================================================
-      // Phase D: Domain Event Side Effects (fire-and-forget)
-      // These NEVER block or crash the main job completion.
+      // Domain Event Side Effects (fire-and-forget)
       // =====================================================
-
       const typeInfo = JOB_TYPE_LABELS[job.name] || { label: job.name, event: 'AI_JOB_COMPLETED', icon: '🤖' };
 
-      // 4a-NEW: Save to global tool_outputs history
+      // Save to history
       const savedOutput = await saveToolOutput({
         userId: job.data.userId,
         aiJobId: job.id,
@@ -258,13 +246,12 @@ export const aiWorker = new Worker(
         model: resolvedModel
       });
 
-      // Update notification action URL with ?outputId=...
       let notificationUrl = typeInfo.url || `/dashboard`;
       if (savedOutput?.id) {
         notificationUrl += `?outputId=${savedOutput.id}`;
       }
 
-      // 4b. Record in AI Generation Ledger
+      // Record in Ledger
       await recordGeneration({
         userId: job.data.userId,
         aiJobId: job.id,
@@ -277,7 +264,7 @@ export const aiWorker = new Worker(
         creditsCost: getCreditCost(job.name),
       });
 
-      // 4b. Emit Activity Event
+      // Emit Activity Event
       const event = await emitEvent({
         type: typeInfo.event,
         actorId: job.data.userId,
@@ -291,7 +278,7 @@ export const aiWorker = new Worker(
         },
       });
 
-      // 4c. Create Notification
+      // Create Notification
       await createNotification({
         userId: job.data.userId,
         title: `${typeInfo.icon} ${typeInfo.label} Complete`,
@@ -301,7 +288,7 @@ export const aiWorker = new Worker(
         priority: 'NORMAL',
       });
 
-      // 4d. Update/Complete Workflow (if applicable)
+      // Workflows
       if (job.name === 'PARSE_RESUME') {
         await upsertWorkflow({
           userId: job.data.userId,
@@ -311,7 +298,6 @@ export const aiWorker = new Worker(
           metadata: { aiJobId: job.id, title: job.data.originalName },
         });
       } else if (job.name === 'TAILOR_RESUME') {
-        // Advance the resume optimization workflow
         await upsertWorkflow({
           userId: job.data.userId,
           type: 'RESUME_OPTIMIZATION',
@@ -337,7 +323,7 @@ export const aiWorker = new Worker(
         }
       });
 
-      // Record the failed generation attempt in the ledger
+      // Record in ledger
       await recordGeneration({
         userId: job.data.userId,
         aiJobId: job.id,
@@ -368,25 +354,63 @@ export const aiWorker = new Worker(
         priority: 'HIGH',
       });
       
-      // Refund credits on failure
+      // Refund credits
       await refundCredits(job.data.userId, job.name, `Job failed: ${error.message.substring(0, 100)}`);
       
-      throw error; // Let BullMQ handle retries if applicable
+      throw error;
     }
-    });
-  },
-  { 
-    connection: createRedisConnection(),
-    
-    // === UPSTASH FREE TIER OPTIMIZATIONS ===
-    concurrency: 1,               // 1 job at a time (AI calls are slow anyway)
-    lockDuration: 120_000,        // 2 min lock (AI generation takes 10-30s)
-    stalledInterval: 120_000,     // Check stalled every 2 min (default: 30s)
-    maxStalledCount: 1,           // Fail stalled jobs after 1 check
-    drainDelay: 10,               // 10s pause when queue empty (default: 5s)
-  }
-);
+  });
+};
+// ============================================================================
+// BullMQ Worker Initialization with Quota Guard
+// ============================================================================
+export let aiWorker = null;
 
-aiWorker.on('failed', (job, err) => {
-  logger.error({ jobId: job?.id, err: err.message }, 'Worker reported failure');
-});
+export const initWorker = () => {
+  if (isRedisQuotaExceeded()) {
+    logger.info('AI Worker running in In-Process Mode (Redis quota exceeded)');
+    return null;
+  }
+
+  try {
+    const connection = createRedisConnection();
+    if (!connection) {
+      logger.info('AI Worker running in In-Process Mode (Redis offline or quota exceeded)');
+      return null;
+    }
+
+    aiWorker = new Worker(
+      AI_QUEUE_NAME,
+      async (job) => processAIJob(job),
+      { 
+        connection,
+        concurrency: 3,
+        lockDuration: 120_000,
+        stalledInterval: 60_000,
+        maxStalledCount: 1,
+        drainDelay: 5,
+      }
+    );
+
+    aiWorker.on('error', (err) => {
+      if (err?.message?.includes('max requests limit exceeded')) {
+        logger.warn('[AI Worker] Upstash request limit reached. BullMQ worker paused; in-process processor active.');
+        aiWorker?.pause(true).catch(() => {});
+      } else {
+        logger.warn({ err: err?.message }, 'AI Worker Redis notice');
+      }
+    });
+
+    aiWorker.on('failed', (job, err) => {
+      logger.error({ jobId: job?.id, err: err?.message }, 'Worker reported job failure');
+    });
+
+    logger.info(`AI BullMQ Worker initialized for queue: ${AI_QUEUE_NAME}`);
+    return aiWorker;
+  } catch (e) {
+    logger.warn({ err: e.message }, 'Could not initialize BullMQ Worker; using in-process processor');
+    return null;
+  }
+};
+
+initWorker();

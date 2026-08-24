@@ -1,5 +1,6 @@
 import prisma from '../config/db.js';
 import logger from '../config/logger.js';
+import { safeCacheGet, safeCacheSet, safeCacheDel } from '../config/redis.js';
 
 /**
  * Studio Controller
@@ -8,28 +9,154 @@ import logger from '../config/logger.js';
 
 // ==================== TEMPLATES ====================
 
+export const DEFAULT_TEMPLATES = [
+  {
+    id: "tpl_modern_tech",
+    name: "Modern Tech",
+    description: "Clean single-column format with vibrant blue accents, optimized for software engineers and tech roles.",
+    category: "modern",
+    isFree: true,
+    templateData: {
+      layout: "single-column",
+      fontFamily: "Inter, -apple-system, sans-serif",
+      fontSize: 10.5,
+      accentColor: "#2563EB",
+      primaryColor: "#111827",
+    }
+  },
+  {
+    id: "tpl_minimal_exec",
+    name: "Minimal Executive",
+    description: "Sleek, high-density layout with elegant typography. Maximum ATS compatibility for leadership and management.",
+    category: "minimal",
+    isFree: true,
+    templateData: {
+      layout: "single-column",
+      fontFamily: "Georgia, serif",
+      fontSize: 10.5,
+      accentColor: "#000000",
+      primaryColor: "#1A1A1A",
+    }
+  },
+  {
+    id: "tpl_classic_pro",
+    name: "Classic Professional",
+    description: "Traditional corporate styling with subtle navy accents. Perfect for finance, consulting, and enterprise.",
+    category: "classic",
+    isFree: true,
+    templateData: {
+      layout: "single-column",
+      fontFamily: "Times New Roman, serif",
+      fontSize: 11,
+      accentColor: "#1E3A8A",
+      primaryColor: "#1F2937",
+    }
+  },
+  {
+    id: "tpl_silicon_valley",
+    name: "Silicon Valley Compact",
+    description: "Ultra-compact 1-page format with emerald highlights and bullet point emphasis. Ideal for fast-paced startups.",
+    category: "modern",
+    isFree: true,
+    templateData: {
+      layout: "single-column",
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+      fontSize: 10,
+      accentColor: "#059669",
+      primaryColor: "#111827",
+    }
+  },
+  {
+    id: "tpl_creative_designer",
+    name: "Creative Developer",
+    description: "Distinctive neo-brutalist flair with violet borders and bold section headers for creative technologists.",
+    category: "creative",
+    isFree: true,
+    templateData: {
+      layout: "single-column",
+      fontFamily: "Space Grotesk, sans-serif",
+      fontSize: 10.5,
+      accentColor: "#7C3AED",
+      primaryColor: "#0F172A",
+    }
+  },
+  {
+    id: "tpl_academic_scholar",
+    name: "Academic & Research",
+    description: "Comprehensive layout with dedicated sections for publications, research, and thesis work.",
+    category: "academic",
+    isFree: true,
+    templateData: {
+      layout: "single-column",
+      fontFamily: "Garamond, Georgia, serif",
+      fontSize: 11,
+      accentColor: "#D97706",
+      primaryColor: "#18181B",
+    }
+  }
+];
+
+export const ensureDefaultTemplates = async () => {
+  try {
+    for (const tpl of DEFAULT_TEMPLATES) {
+      await prisma.resumeTemplate.upsert({
+        where: { id: tpl.id },
+        update: {
+          name: tpl.name,
+          description: tpl.description,
+          category: tpl.category,
+          isFree: tpl.isFree,
+          templateData: tpl.templateData,
+        },
+        create: {
+          id: tpl.id,
+          name: tpl.name,
+          description: tpl.description,
+          category: tpl.category,
+          isFree: tpl.isFree,
+          templateData: tpl.templateData,
+        }
+      });
+    }
+  } catch (err) {
+    logger.warn({ err: err.message }, 'Failed to seed default templates to DB');
+  }
+};
+
 /**
  * GET /studio/templates
  * List all available resume templates.
  */
 export const listTemplates = async (req, res) => {
   try {
-    const templates = await prisma.resumeTemplate.findMany({
-      orderBy: { createdAt: 'asc' },
-      select: {
-        id: true,
-        name: true,
-        description: true,
-        thumbnailUrl: true,
-        category: true,
-        isFree: true,
-        templateData: true,
-      },
-    });
+    // Background seed if table is empty
+    ensureDefaultTemplates().catch(() => {});
+
+    let templates = [];
+    try {
+      templates = await prisma.resumeTemplate.findMany({
+        orderBy: { createdAt: 'asc' },
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          thumbnailUrl: true,
+          category: true,
+          isFree: true,
+          templateData: true,
+        },
+      });
+    } catch (dbErr) {
+      logger.warn({ err: dbErr.message }, 'Failed to fetch templates from DB, using defaults');
+    }
+
+    if (!templates || templates.length === 0) {
+      return res.json(DEFAULT_TEMPLATES);
+    }
     res.json(templates);
   } catch (error) {
     logger.error({ err: error }, 'Failed to list templates');
-    res.status(500).json({ error: 'Failed to fetch templates' });
+    res.json(DEFAULT_TEMPLATES);
   }
 };
 
@@ -39,13 +166,23 @@ export const listTemplates = async (req, res) => {
  */
 export const getTemplate = async (req, res) => {
   try {
-    const template = await prisma.resumeTemplate.findUnique({
-      where: { id: req.params.id },
-    });
+    let template = null;
+    try {
+      template = await prisma.resumeTemplate.findUnique({
+        where: { id: req.params.id },
+      });
+    } catch (e) {}
+
+    if (!template) {
+      template = DEFAULT_TEMPLATES.find(t => t.id === req.params.id);
+    }
+
     if (!template) return res.status(404).json({ error: 'Template not found' });
     res.json(template);
   } catch (error) {
     logger.error({ err: error }, 'Failed to get template');
+    const fallback = DEFAULT_TEMPLATES.find(t => t.id === req.params.id);
+    if (fallback) return res.json(fallback);
     res.status(500).json({ error: 'Failed to fetch template' });
   }
 };
@@ -56,14 +193,12 @@ export const getTemplate = async (req, res) => {
  * GET /studio/resumes
  * List all studio resumes for the current user.
  */
-import redis from '../config/redis.js';
-
 export const listStudioResumes = async (req, res) => {
   try {
     const cacheKey = `studio_resumes:${req.user.id}`;
-    const cached = await redis.get(cacheKey);
+    const cached = await safeCacheGet(cacheKey);
     if (cached) {
-      return res.json(JSON.parse(cached));
+      return res.json(typeof cached === 'string' ? JSON.parse(cached) : cached);
     }
 
     const resumes = await prisma.studioResume.findMany({
@@ -84,7 +219,7 @@ export const listStudioResumes = async (req, res) => {
       },
     });
 
-    await redis.set(cacheKey, JSON.stringify(resumes), 'EX', 60);
+    await safeCacheSet(cacheKey, JSON.stringify(resumes), 60);
     res.json(resumes);
   } catch (error) {
     logger.error({ err: error }, 'Failed to list studio resumes');
@@ -100,15 +235,45 @@ export const createStudioResume = async (req, res) => {
   try {
     const { title, templateId, resumeData, sectionOrder, styleConfig } = req.body;
 
-    // If templateId provided, fetch template defaults
     let defaultStyle = {};
     let defaultOrder = ['personal', 'summary', 'experience', 'education', 'skills', 'projects', 'certifications'];
-
+    let validTemplateId = templateId || null;
     if (templateId) {
-      const template = await prisma.resumeTemplate.findUnique({ where: { id: templateId } });
-      if (template?.templateData) {
-        defaultStyle = template.templateData.style || {};
-        defaultOrder = template.templateData.defaultSectionOrder || defaultOrder;
+      let template = null;
+      try {
+        template = await prisma.resumeTemplate.findUnique({ where: { id: templateId } });
+      } catch (e) {}
+
+      const builtin = DEFAULT_TEMPLATES.find(t => t.id === templateId);
+      if (!template && builtin) {
+        try {
+          template = await prisma.resumeTemplate.upsert({
+            where: { id: builtin.id },
+            update: {
+              name: builtin.name,
+              description: builtin.description,
+              category: builtin.category,
+              isFree: builtin.isFree,
+              templateData: builtin.templateData,
+            },
+            create: {
+              id: builtin.id,
+              name: builtin.name,
+              description: builtin.description,
+              category: builtin.category,
+              isFree: builtin.isFree,
+              templateData: builtin.templateData,
+            }
+          });
+        } catch (e) {
+          validTemplateId = null;
+        }
+      }
+
+      const tplData = template?.templateData || builtin?.templateData;
+      if (tplData) {
+        defaultStyle = tplData.style || tplData || {};
+        defaultOrder = tplData.defaultSectionOrder || defaultOrder;
       }
     }
 
@@ -142,7 +307,7 @@ export const createStudioResume = async (req, res) => {
       data: {
         userId: req.user.id,
         title: title || 'Untitled Resume',
-        templateId: templateId || null,
+        templateId: validTemplateId,
         resumeData: defaultResumeData,
         sectionOrder: sectionOrder || defaultOrder,
         styleConfig: styleConfig || defaultStyle,

@@ -2,73 +2,202 @@ import Redis from 'ioredis';
 import logger from './logger.js';
 
 /**
- * Redis Configuration — Upstash-optimized for free tier
+ * Resilient Redis Configuration with Auto In-Memory Fallback
  * 
- * Free tier limits: 500k commands/month, 50GB bandwidth, 256MB storage
- * 
- * Strategy:
- * - Uses REDIS_URL (Upstash TLS) in production
- * - Falls back to localhost for local development
- * - TLS is auto-detected from rediss:// protocol
- * - Lazy connection to avoid commands on import
+ * Protects against:
+ * 1. Upstash Free Tier Command Limit Exceeded (500k commands/month)
+ * 2. Network dropouts / TLS disconnections
+ * 3. Cache read/write exceptions crashing API endpoints
  */
 
 const isProduction = process.env.NODE_ENV === 'production';
 const redisUrl = process.env.REDIS_URL;
 
-let connectionOptions;
+// State flags
+let isQuotaExceeded = false;
+let isConnected = false;
+let loggedLimitWarning = false;
+
+// In-Memory Fallback Cache (LRU-like with TTL)
+const memoryCache = new Map();
+const MAX_MEMORY_ITEMS = 1000;
+
+export const isRedisQuotaExceeded = () => isQuotaExceeded;
+export const isRedisAvailable = () => isConnected && !isQuotaExceeded;
+
+let connectionOptions = {
+  maxRetriesPerRequest: null,
+  enableReadyCheck: false,
+  lazyConnect: true,
+  enableOfflineQueue: false, // Fail immediately instead of queuing commands when Redis is down
+  reconnectOnError: (err) => {
+    if (err?.message?.includes('max requests limit exceeded')) {
+      isQuotaExceeded = true;
+      return false; // Do NOT attempt reconnection if quota is exceeded
+    }
+    return true;
+  }
+};
 
 if (redisUrl) {
-  // Upstash / Production Redis — parse the URL and enable TLS
   connectionOptions = {
+    ...connectionOptions,
     ...(redisUrl.startsWith('rediss://') ? { tls: { rejectUnauthorized: false } } : {}),
-    maxRetriesPerRequest: null, // Required by BullMQ
-    enableReadyCheck: false,    // Skip CLUSTER INFO — saves commands on Upstash
-    lazyConnect: true,          // Don't connect until first command
   };
 } else {
-  if (isProduction) {
-    logger.error('REDIS_URL is missing in production environment. Please configure it.');
-    process.exit(1);
-  }
-  // Local development fallback
   connectionOptions = {
+    ...connectionOptions,
     host: '127.0.0.1',
     port: 6379,
-    maxRetriesPerRequest: null,
-    lazyConnect: true,
   };
 }
 
-// Create the shared connection
-const redisConnection = redisUrl
-  ? new Redis(redisUrl, connectionOptions)
-  : new Redis(connectionOptions);
+// Shared Redis client for caching
+let redisClient = null;
 
-// Explicitly connect (since lazyConnect is true)
-redisConnection.connect().catch((err) => {
-  logger.error({ err }, 'Failed to connect to Redis');
-});
+try {
+  redisClient = redisUrl
+    ? new Redis(redisUrl, connectionOptions)
+    : new Redis(connectionOptions);
 
-redisConnection.on('error', (err) => {
-  // Only log once per error type to avoid log spam
-  logger.error({ err: err.message }, 'Redis connection error');
-});
+  redisClient.on('connect', () => {
+    isConnected = true;
+    logger.info(`[Redis] Connected successfully ${redisUrl ? '(Upstash)' : '(localhost)'}`);
+  });
 
-redisConnection.on('connect', () => {
-  logger.info(`Connected to Redis successfully ${redisUrl ? '(Upstash)' : '(localhost)'}`);
-});
+  redisClient.on('ready', () => {
+    isConnected = true;
+  });
 
-/**
- * Creates a DUPLICATE connection for BullMQ workers/queues.
- * BullMQ requires separate connections for Queue and Worker.
- * Using .duplicate() shares the same config without extra setup.
- */
-export const createRedisConnection = () => {
-  if (redisUrl) {
-    return new Redis(redisUrl, connectionOptions);
-  }
-  return new Redis(connectionOptions);
+  redisClient.on('close', () => {
+    isConnected = false;
+  });
+
+  redisClient.on('error', (err) => {
+    if (err?.message?.includes('max requests limit exceeded')) {
+      isQuotaExceeded = true;
+      isConnected = false;
+      if (!loggedLimitWarning) {
+        logger.warn('[Redis] Upstash 500k monthly request limit reached. Gracefully switching to In-Memory Cache and In-Process Job Processing. (Zero downtime)');
+        loggedLimitWarning = true;
+      }
+    } else {
+      logger.warn({ err: err?.message }, '[Redis] Connection warning (using safe fallback)');
+    }
+  });
+
+  // Attempt initial connect
+  redisClient.connect().catch((err) => {
+    if (err?.message?.includes('max requests limit exceeded')) {
+      isQuotaExceeded = true;
+    }
+    logger.warn({ err: err.message }, '[Redis] Initial connect failed, using memory fallback');
+  });
+
+} catch (e) {
+  logger.error({ err: e.message }, '[Redis] Failed to initialize client');
+}
+
+const bullMQConnectionOptions = {
+  maxRetriesPerRequest: null,
+  enableReadyCheck: false,
+  lazyConnect: true,
+  retryStrategy: (times) => {
+    if (isQuotaExceeded) return null;
+    return Math.min(times * 500, 2000);
+  },
+  reconnectOnError: (err) => {
+    if (err?.message?.includes('max requests limit exceeded')) {
+      isQuotaExceeded = true;
+      return false;
+    }
+    return true;
+  },
+  ...(redisUrl && redisUrl.startsWith('rediss://') ? { tls: { rejectUnauthorized: false } } : {}),
 };
 
-export default redisConnection;
+/**
+ * Creates a duplicate connection for BullMQ
+ */
+export const createRedisConnection = () => {
+  if (isQuotaExceeded) {
+    return null;
+  }
+  try {
+    return redisUrl
+      ? new Redis(redisUrl, bullMQConnectionOptions)
+      : new Redis(bullMQConnectionOptions);
+  } catch (err) {
+    logger.warn({ err: err.message }, '[Redis] Could not duplicate Redis connection');
+    return null;
+  }
+};
+
+/**
+ * Safe Cache GET: Reads from Redis if healthy, falls back to in-memory Map
+ */
+export const safeCacheGet = async (key) => {
+  if (isRedisAvailable() && redisClient?.status === 'ready') {
+    try {
+      const data = await redisClient.get(key);
+      if (data) return data;
+    } catch (err) {
+      if (err?.message?.includes('max requests limit exceeded')) {
+        isQuotaExceeded = true;
+      }
+    }
+  }
+
+  // Memory fallback
+  const item = memoryCache.get(key);
+  if (item) {
+    if (Date.now() < item.expiresAt) {
+      return item.value;
+    }
+    memoryCache.delete(key);
+  }
+  return null;
+};
+
+/**
+ * Safe Cache SET: Writes to in-memory Map AND Redis (if healthy)
+ */
+export const safeCacheSet = async (key, value, ttlSeconds = 60) => {
+  // Always update in-memory cache
+  if (memoryCache.size >= MAX_MEMORY_ITEMS) {
+    const oldestKey = memoryCache.keys().next().value;
+    memoryCache.delete(oldestKey);
+  }
+  memoryCache.set(key, { 
+    value, 
+    expiresAt: Date.now() + (ttlSeconds * 1000) 
+  });
+
+  if (isRedisAvailable() && redisClient?.status === 'ready') {
+    try {
+      await redisClient.set(key, value, 'EX', ttlSeconds);
+    } catch (err) {
+      if (err?.message?.includes('max requests limit exceeded')) {
+        isQuotaExceeded = true;
+      }
+    }
+  }
+};
+
+/**
+ * Safe Cache DEL: Deletes from in-memory Map and Redis
+ */
+export const safeCacheDel = async (key) => {
+  memoryCache.delete(key);
+  if (isRedisAvailable() && redisClient?.status === 'ready') {
+    try {
+      await redisClient.del(key);
+    } catch (err) {
+      if (err?.message?.includes('max requests limit exceeded')) {
+        isQuotaExceeded = true;
+      }
+    }
+  }
+};
+
+export default redisClient;

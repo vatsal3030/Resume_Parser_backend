@@ -3,49 +3,137 @@ import logger from '../config/logger.js';
 
 /**
  * AI Provider Layer
- * Abstracts the logic for calling different AI providers (OpenRouter vs Google Gemini Direct)
- * Implements fallback mechanisms to ensure high availability.
+ * Abstracts calling different AI providers (OpenRouter vs Google Gemini Direct)
+ * Implements resilient fallback mechanisms and modern model routing.
  */
 
-// Initialize Direct Gemini Client
-const gemini = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY
-});
+// Safe Lazy Gemini Client
+let geminiClientInstance = null;
+const getGeminiClient = () => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY is not configured in environment.');
+  }
+  if (!geminiClientInstance) {
+    geminiClientInstance = new GoogleGenAI({ apiKey });
+  }
+  return geminiClientInstance;
+};
 
-// Environment Configuration
-const DEFAULT_FREE_MODEL = process.env.OPENROUTER_MODEL || process.env.DEFAULT_FREE_MODEL || 'deepseek/deepseek-v4-flash:free';
-const DEFAULT_PRO_MODEL = process.env.DEFAULT_PRO_MODEL || 'google/gemini-2.5-pro';
-const DIRECT_GEMINI_FALLBACK = process.env.GEMINI_MODELS || 'gemini-2.5-flash';
+// Model Constants
+const DEFAULT_DIRECT_GEMINI_MODEL = process.env.GEMINI_MODELS || 'gemini-3.6-flash';
+const DEFAULT_FREE_OPENROUTER_MODEL = process.env.DEFAULT_FREE_MODEL || 'nvidia/nemotron-3.5-lightning:free';
+
+/**
+ * Normalizes legacy/deprecated model slugs to active models.
+ */
+const normalizeDirectGeminiModel = (modelId) => {
+  if (!modelId) return DEFAULT_DIRECT_GEMINI_MODEL;
+  if (modelId === 'gemini-2.5-flash' || modelId === 'gemini-1.5-flash' || modelId === 'gemini-2.0-flash' || modelId === 'gemini-3.6-flash') {
+    return 'gemini-3.6-flash';
+  }
+  if (modelId === 'gemini-3.7-flash') {
+    return 'gemini-3.7-flash';
+  }
+  if (modelId === 'gemini-2.5-pro' || modelId === 'gemini-1.5-pro' || modelId === 'gemini-3.1-pro-preview' || modelId === 'gemini-3.1-pro') {
+    return 'gemini-3.6-flash'; // gemini-3.6-flash is high-performance and reliably available
+  }
+  return modelId;
+};
+
+const normalizeOpenRouterModel = (modelId) => {
+  if (!modelId) return DEFAULT_FREE_OPENROUTER_MODEL;
+  const legacyMap = {
+    'deepseek/deepseek-v4-flash:free': 'google/gemma-4-26b-a4b-it:free',
+    'deepseek/deepseek-chat:free': 'nvidia/nemotron-3.5-lightning:free',
+    'deepseek/deepseek-r1:free': 'nvidia/nemotron-3.5-lightning:free',
+    'meta-llama/llama-3.3-70b-instruct:free': 'nvidia/nemotron-3.5-lightning:free',
+    'google/gemini-2.0-flash-lite-preview-02-05:free': 'google/gemma-4-26b-a4b-it:free',
+    'google/gemini-2.0-pro-exp-02-05:free': 'google/gemma-4-26b-a4b-it:free',
+  };
+  return legacyMap[modelId] || modelId;
+};
 
 /**
  * Normalizes the model selection and returns the appropriate provider and model name.
- * IMPORTANT: Gemini Direct is ALWAYS the primary for 'default' requests.
- * OpenRouter is only used when a user explicitly selects an OpenRouter model ID.
  */
-const resolveProviderAndModel = (requestedModelId) => {
+export const resolveProviderAndModel = (requestedModelId) => {
+  const hasGeminiKey = !!process.env.GEMINI_API_KEY;
   const hasOpenRouter = !!process.env.OPENROUTER_API_KEY;
 
-  // If no model requested, use OpenRouter if available, else Gemini
+  // If no model requested or 'default', prefer Gemini Direct if key is present, else OpenRouter
   if (!requestedModelId || requestedModelId === 'default') {
-    if (hasOpenRouter) {
-      return { provider: 'openrouter', model: DEFAULT_FREE_MODEL };
+    if (hasGeminiKey) {
+      return { provider: 'gemini', model: DEFAULT_DIRECT_GEMINI_MODEL };
     }
-    return { provider: 'gemini', model: DIRECT_GEMINI_FALLBACK };
+    if (hasOpenRouter) {
+      return { provider: 'openrouter', model: DEFAULT_FREE_OPENROUTER_MODEL };
+    }
+    return { provider: 'gemini', model: DEFAULT_DIRECT_GEMINI_MODEL };
   }
 
   // If a specific gemini direct model is requested
   if (requestedModelId.startsWith('gemini-')) {
-    return { provider: 'gemini', model: requestedModelId };
+    return { provider: 'gemini', model: normalizeDirectGeminiModel(requestedModelId) };
   }
 
-  // Any other specific string is an OpenRouter model (e.g., 'deepseek/deepseek-chat:free')
+  // Any other string is treated as an OpenRouter model ID
   if (hasOpenRouter) {
-     return { provider: 'openrouter', model: requestedModelId };
+    return { provider: 'openrouter', model: normalizeOpenRouterModel(requestedModelId) };
   }
 
-  // Fallback if OpenRouter isn't configured but an OR model was requested
+  // Fallback if OpenRouter isn't configured
   logger.warn(`OpenRouter model ${requestedModelId} requested, but OPENROUTER_API_KEY is missing. Falling back to Direct Gemini.`);
-  return { provider: 'gemini', model: DIRECT_GEMINI_FALLBACK };
+  return { provider: 'gemini', model: DEFAULT_DIRECT_GEMINI_MODEL };
+};
+
+/**
+ * Robust JSON Parser for AI Outputs
+ */
+const extractJson = (content) => {
+  if (typeof content === 'object' && content !== null) return content;
+  if (typeof content !== 'string') throw new Error('Response is not a valid JSON string');
+
+  const str = content.trim();
+
+  // 1. Direct JSON parse
+  try {
+    return JSON.parse(str);
+  } catch {}
+
+  // 2. Strip ```json ... ``` or ``` ... ```
+  const codeBlockMatch = str.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (codeBlockMatch) {
+    try {
+      return JSON.parse(codeBlockMatch[1].trim());
+    } catch {}
+  }
+
+  // 3. Bracket extraction fallback
+  const firstBrace = str.indexOf('{');
+  const lastBrace = str.lastIndexOf('}');
+  const firstBracket = str.indexOf('[');
+  const lastBracket = str.lastIndexOf(']');
+
+  let startIdx = -1;
+  let endIdx = -1;
+
+  if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
+    startIdx = firstBrace;
+    endIdx = lastBrace;
+  } else if (firstBracket !== -1) {
+    startIdx = firstBracket;
+    endIdx = lastBracket;
+  }
+
+  if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+    const candidate = str.substring(startIdx, endIdx + 1);
+    try {
+      return JSON.parse(candidate);
+    } catch {}
+  }
+
+  throw new Error(`Failed to parse response as JSON. Output snippet: ${str.slice(0, 150)}...`);
 };
 
 /**
@@ -60,7 +148,9 @@ const callOpenRouter = async (model, prompt, systemInstruction, responseFormat) 
   }
   messages.push({ role: 'user', content: prompt });
 
-  const cleanReferer = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.replace(/"/g, '').split(',')[0] : 'http://localhost:3000';
+  const cleanReferer = process.env.ALLOWED_ORIGINS 
+    ? process.env.ALLOWED_ORIGINS.replace(/"/g, '').split(',')[0] 
+    : 'http://localhost:3000';
 
   let data;
   try {
@@ -76,7 +166,8 @@ const callOpenRouter = async (model, prompt, systemInstruction, responseFormat) 
         'Content-Type': 'application/json',
         'HTTP-Referer': cleanReferer,
         'X-Title': 'Elevara',
-      }
+      },
+      timeout: 45000
     });
     data = response.data;
   } catch (error) {
@@ -85,47 +176,13 @@ const callOpenRouter = async (model, prompt, systemInstruction, responseFormat) 
     throw new Error(`OpenRouter API error: ${errorData}`);
   }
 
-  let content = data.choices[0].message.content;
-  
+  const content = data?.choices?.[0]?.message?.content;
+  if (!content) {
+    throw new Error('OpenRouter returned an empty response.');
+  }
+
   if (responseFormat === 'json') {
-    try {
-      // Robust JSON parsing: strip markdown blocks if they exist
-      const jsonMatch = content.match(/```json\n([\s\S]*?)\n```/);
-      if (jsonMatch) {
-        content = jsonMatch[1];
-      } else {
-        const genericMatch = content.match(/```\n([\s\S]*?)\n```/);
-        if (genericMatch) {
-          content = genericMatch[1];
-        } else {
-          // Bracket matching fallback if wrapped in conversational text
-          const firstBrace = content.indexOf('{');
-          const lastBrace = content.lastIndexOf('}');
-          const firstBracket = content.indexOf('[');
-          const lastBracket = content.lastIndexOf(']');
-          
-          let startIdx = -1;
-          let endIdx = -1;
-          
-          if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
-            startIdx = firstBrace;
-            endIdx = lastBrace;
-          } else if (firstBracket !== -1) {
-            startIdx = firstBracket;
-            endIdx = lastBracket;
-          }
-          
-          if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-            content = content.substring(startIdx, endIdx + 1);
-          }
-        }
-      }
-      return JSON.parse(content);
-    } catch (e) {
-      logger.error({ err: e.message, content }, 'Failed to parse JSON from OpenRouter');
-      // Pass the raw content back so frontend can attempt to salvage it
-      throw new Error(`Failed to parse OpenRouter response as JSON. Raw output: ${content}`);
-    }
+    return extractJson(content);
   }
   
   return content;
@@ -135,11 +192,13 @@ const callOpenRouter = async (model, prompt, systemInstruction, responseFormat) 
  * Call Direct Gemini API
  */
 const callGeminiDirect = async (model, prompt, systemInstruction, responseFormat) => {
-  logger.info(`Generating content via Direct Gemini API (Model: ${model})`);
+  const normalizedModel = normalizeDirectGeminiModel(model);
+  logger.info(`Generating content via Direct Gemini API (Model: ${normalizedModel})`);
   const fullPrompt = systemInstruction ? `${systemInstruction}\n\n${prompt}` : prompt;
   
-  const response = await gemini.models.generateContent({
-    model: model,
+  const client = getGeminiClient();
+  const response = await client.models.generateContent({
+    model: normalizedModel,
     contents: fullPrompt,
     config: {
       responseMimeType: responseFormat === 'json' ? "application/json" : "text/plain",
@@ -147,11 +206,14 @@ const callGeminiDirect = async (model, prompt, systemInstruction, responseFormat
     }
   });
 
-  return responseFormat === 'json' ? JSON.parse(response.text) : response.text;
+  if (responseFormat === 'json') {
+    return extractJson(response.text);
+  }
+  return response.text;
 };
 
 /**
- * Unified Generate function with Fallback
+ * Unified Generate function with Resilient Fallback
  */
 export const generateAI = async ({
   prompt,
@@ -172,30 +234,30 @@ export const generateAI = async ({
   } catch (error) {
     logger.warn({ err: error.message }, `Primary AI provider (${target.provider}) failed. Attempting fallback.`);
 
-    // Fallback logic
-    if (target.provider === 'openrouter') {
-      // If OpenRouter fails, try direct Gemini
+    // Fallback strategy:
+    // If OpenRouter was primary, attempt Gemini Direct
+    if (target.provider === 'openrouter' && process.env.GEMINI_API_KEY) {
       try {
-        logger.info(`Fallback: Attempting Direct Gemini (${DIRECT_GEMINI_FALLBACK})`);
-        const result = await callGeminiDirect(DIRECT_GEMINI_FALLBACK, prompt, systemInstruction, responseFormat);
-        return { result, provider: 'gemini', model: DIRECT_GEMINI_FALLBACK };
+        logger.info(`Fallback: Attempting Direct Gemini (${DEFAULT_DIRECT_GEMINI_MODEL})`);
+        const result = await callGeminiDirect(DEFAULT_DIRECT_GEMINI_MODEL, prompt, systemInstruction, responseFormat);
+        return { result, provider: 'gemini', model: DEFAULT_DIRECT_GEMINI_MODEL };
       } catch (fallbackError) {
-        logger.error({ err: fallbackError.message }, 'Fallback AI provider also failed.');
+        logger.error({ err: fallbackError.message }, 'Fallback AI provider (Gemini) also failed.');
         throw new Error(`All AI providers failed. Last error: ${fallbackError.message}`);
       }
-    } else {
-      // If Direct Gemini failed, and OpenRouter is available, try OpenRouter free
-      if (process.env.OPENROUTER_API_KEY) {
-         try {
-           logger.info(`Fallback: Attempting OpenRouter (${DEFAULT_FREE_MODEL})`);
-           const result = await callOpenRouter(DEFAULT_FREE_MODEL, prompt, systemInstruction, responseFormat);
-           return { result, provider: 'openrouter', model: DEFAULT_FREE_MODEL };
-         } catch (fallbackError) {
-           logger.error({ err: fallbackError.message }, 'Fallback AI provider also failed.');
-           throw new Error(`All AI providers failed. Last error: ${fallbackError.message}`);
-         }
+    } 
+    // If Gemini Direct was primary, attempt OpenRouter free model
+    else if (target.provider === 'gemini' && process.env.OPENROUTER_API_KEY) {
+      try {
+        logger.info(`Fallback: Attempting OpenRouter (${DEFAULT_FREE_OPENROUTER_MODEL})`);
+        const result = await callOpenRouter(DEFAULT_FREE_OPENROUTER_MODEL, prompt, systemInstruction, responseFormat);
+        return { result, provider: 'openrouter', model: DEFAULT_FREE_OPENROUTER_MODEL };
+      } catch (fallbackError) {
+        logger.error({ err: fallbackError.message }, 'Fallback AI provider (OpenRouter) also failed.');
+        throw new Error(`All AI providers failed. Last error: ${fallbackError.message}`);
       }
-      throw error;
     }
+    
+    throw error;
   }
 };

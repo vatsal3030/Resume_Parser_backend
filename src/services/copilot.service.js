@@ -2,16 +2,24 @@ import { GoogleGenAI } from '@google/genai';
 import prisma from '../config/db.js';
 import { aiQueue } from '../queues/ai.queue.js';
 import logger from '../config/logger.js';
-import { generateAI } from '../providers/ai.provider.js';
+import { generateAI, resolveProviderAndModel } from '../providers/ai.provider.js';
 
 // Configuration
-const DEFAULT_FREE_MODEL = process.env.DEFAULT_FREE_MODEL || 'deepseek/deepseek-chat:free';
-const DIRECT_GEMINI_FALLBACK = process.env.GEMINI_MODELS || 'gemini-2.5-flash';
+const DEFAULT_FREE_MODEL = process.env.DEFAULT_FREE_MODEL || 'google/gemma-4-26b-a4b-it:free';
+const DIRECT_GEMINI_FALLBACK = process.env.GEMINI_MODELS || 'gemini-2.0-flash';
 
-// Initialize Gemini (Direct)
-const gemini = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY
-});
+// Lazy Gemini Client
+let geminiClientInstance = null;
+const getGeminiClient = () => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY is not configured in environment.');
+  }
+  if (!geminiClientInstance) {
+    geminiClientInstance = new GoogleGenAI({ apiKey });
+  }
+  return geminiClientInstance;
+};
 
 // System Prompt describing tools and constraints
 const SYSTEM_PROMPT = `You are the AI Career Copilot, an autonomous career advisor and assistant on the Elevara platform.
@@ -56,31 +64,6 @@ Instructions:
 `;
 
 /**
- * Normalizes the model selection and returns the appropriate provider and model name.
- */
-const resolveProviderAndModel = (requestedModelId) => {
-  const hasOpenRouter = !!process.env.OPENROUTER_API_KEY;
-
-  if (!requestedModelId || requestedModelId === 'default') {
-    if (hasOpenRouter) {
-      return { provider: 'openrouter', model: DEFAULT_FREE_MODEL };
-    }
-    return { provider: 'gemini', model: DIRECT_GEMINI_FALLBACK };
-  }
-
-  if (requestedModelId.startsWith('gemini-')) {
-    return { provider: 'gemini', model: requestedModelId };
-  }
-
-  if (hasOpenRouter) {
-     return { provider: 'openrouter', model: requestedModelId };
-  }
-
-  logger.warn(`OpenRouter model ${requestedModelId} requested, but OPENROUTER_API_KEY is missing. Falling back to Direct Gemini.`);
-  return { provider: 'gemini', model: DIRECT_GEMINI_FALLBACK };
-};
-
-/**
  * Call OpenRouter with a messages array
  */
 const callOpenRouterMessages = async (model, messages) => {
@@ -98,7 +81,8 @@ const callOpenRouterMessages = async (model, messages) => {
       'Content-Type': 'application/json',
       'HTTP-Referer': cleanReferer,
       'X-Title': 'Elevara',
-    }
+    },
+    timeout: 45000
   });
 
   return response.data.choices[0].message.content;
@@ -117,7 +101,8 @@ const callGeminiDirectMessages = async (model, messages) => {
     parts: [{ text: m.content }]
   }));
 
-  const response = await gemini.models.generateContent({
+  const client = getGeminiClient();
+  const response = await client.models.generateContent({
     model: model,
     contents,
     config: {
@@ -516,7 +501,8 @@ export const streamFinalResponse = async function*(messages, modelId = null) {
         parts: [{ text: m.content }]
       }));
 
-      const responseStream = await gemini.models.generateContentStream({
+      const client = getGeminiClient();
+      const responseStream = await client.models.generateContentStream({
         model: target.model,
         contents,
         config: {

@@ -18,8 +18,8 @@ async function test(modelId) {
 }
 
 async function run() {
-  await test("deepseek/deepseek-v4-flash:free");
-  await test("meta-llama/llama-3.3-70b-instruct:free");
+  await test("google/gemma-4-26b-a4b-it:free");
+  await test("nvidia/nemotron-3.5-lightning:free");
 }
 
 run();

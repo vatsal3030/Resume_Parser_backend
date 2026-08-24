@@ -89,9 +89,13 @@ export const listHistory = async (req, res) => {
  */
 export const getHistoryItem = async (req, res) => {
   try {
+    const targetId = req.params.id;
     const item = await prisma.toolOutput.findFirst({
       where: {
-        id: req.params.id,
+        OR: [
+          { id: targetId },
+          { aiJobId: targetId }
+        ],
         userId: req.user.id,
         deletedAt: null,
       },
@@ -114,6 +118,7 @@ export const getHistoryItem = async (req, res) => {
  */
 export const updateHistoryItem = async (req, res) => {
   try {
+    const targetId = req.params.id;
     const { title, isPinned, outputPayload } = req.body;
     const updateData = {};
     if (title !== undefined) updateData.title = title;
@@ -126,7 +131,10 @@ export const updateHistoryItem = async (req, res) => {
 
     const item = await prisma.toolOutput.updateMany({
       where: {
-        id: req.params.id,
+        OR: [
+          { id: targetId },
+          { aiJobId: targetId }
+        ],
         userId: req.user.id,
         deletedAt: null,
       },
@@ -150,9 +158,13 @@ export const updateHistoryItem = async (req, res) => {
  */
 export const deleteHistoryItem = async (req, res) => {
   try {
+    const targetId = req.params.id;
     const result = await prisma.toolOutput.updateMany({
       where: {
-        id: req.params.id,
+        OR: [
+          { id: targetId },
+          { aiJobId: targetId }
+        ],
         userId: req.user.id,
         deletedAt: null,
       },
@@ -176,9 +188,13 @@ export const deleteHistoryItem = async (req, res) => {
  */
 export const restoreHistoryItem = async (req, res) => {
   try {
+    const targetId = req.params.id;
     const result = await prisma.toolOutput.updateMany({
       where: {
-        id: req.params.id,
+        OR: [
+          { id: targetId },
+          { aiJobId: targetId }
+        ],
         userId: req.user.id,
         deletedAt: { not: null },
       },
@@ -244,10 +260,14 @@ export const listTrash = async (req, res) => {
  */
 export const permanentDeleteItem = async (req, res) => {
   try {
+    const targetId = req.params.id;
     // First verify it's trashed and owned by user
     const item = await prisma.toolOutput.findFirst({
       where: {
-        id: req.params.id,
+        OR: [
+          { id: targetId },
+          { aiJobId: targetId }
+        ],
         userId: req.user.id,
         deletedAt: { not: null },
       },
@@ -257,10 +277,10 @@ export const permanentDeleteItem = async (req, res) => {
       return res.status(404).json({ error: 'Trashed item not found' });
     }
 
-    // Hard delete (Prisma's deleteMany ensures proper uuid casting and safe execution)
+    // Hard delete
     await prisma.toolOutput.deleteMany({
       where: {
-        id: req.params.id,
+        id: item.id,
         userId: req.user.id
       }
     });

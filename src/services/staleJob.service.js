@@ -10,7 +10,7 @@ import logger from '../config/logger.js';
  * Should be called periodically (e.g., on server start or via cron).
  */
 
-const STALE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+const STALE_THRESHOLD_MS = 3 * 60 * 1000; // 3 minutes
 
 /**
  * Mark stale PROCESSING jobs as FAILED with a descriptive error.

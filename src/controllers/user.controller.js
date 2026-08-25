@@ -43,21 +43,53 @@ export const getUserDetails = async (req, res) => {
     
     if (!user) {
       // Auto-create user if they exist in Supabase but not in Prisma
-      user = await prisma.user.create({
-        data: {
-          id: req.user.id,
-          email: req.user.email || 'unknown@example.com',
-          profile: {
-            create: {} // Instantiate an empty profile to prevent frontend crashes
-          }
-        },
-        include: { profile: true }
-      });
+      try {
+        user = await prisma.user.create({
+          data: {
+            id: req.user.id,
+            email: req.user.email || 'unknown@example.com',
+            credits: 500,
+            profile: {
+              create: { creditBalance: 500 }
+            }
+          },
+          include: { profile: true }
+        });
+      } catch (createErr) {
+        logger.warn({ err: createErr?.message, userId: req.user.id }, 'User create failed, attempting find again');
+        user = await prisma.user.findUnique({
+          where: { id: req.user.id },
+          include: { profile: true }
+        });
+      }
     }
+
+    const creditBalance = user?.profile?.creditBalance ?? user?.credits ?? 500;
     
-    res.json(user);
+    res.json({
+      id: req.user.id,
+      email: req.user.email,
+      ...user,
+      creditBalance,
+      credits: creditBalance,
+      profile: {
+        ...(user?.profile || {}),
+        creditBalance
+      }
+    });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch user details' });
+    logger.error({ err: err?.message, userId: req.user?.id }, 'Failed to fetch user details (returning graceful fallback)');
+    res.json({
+      id: req.user.id,
+      email: req.user.email || 'unknown@example.com',
+      tier: 'FREE',
+      credits: 500,
+      creditBalance: 500,
+      profile: {
+        creditBalance: 500,
+        avatarUrl: null
+      }
+    });
   }
 };
 

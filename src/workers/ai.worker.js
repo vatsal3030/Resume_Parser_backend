@@ -1,7 +1,8 @@
 import { Worker } from 'bullmq';
-import { createRedisConnection, isRedisQuotaExceeded } from '../config/redis.js';
+import { createRedisConnection, isRedisQuotaExceeded, safeCacheDel } from '../config/redis.js';
 import logger from '../config/logger.js';
 import prisma from '../config/db.js';
+import { getUniqueResumeTitle } from '../utils/uniqueTitle.js';
 import { AI_QUEUE_NAME } from '../constants/queue.constants.js';
 import { 
   extractDetailsFromPDF, 
@@ -130,17 +131,22 @@ export const processAIJob = async (job) => {
           generationResult = await extractDetailsFromPDF(job.data.resumeText, job.data.modelId);
           result = generationResult.result;
           
+          // Generate unique title (e.g. First_Resume (1).pdf if duplicate)
+          const uniqueTitle = await getUniqueResumeTitle(job.data.userId, job.data.originalName);
+
           // Save the parsed Document
           const parsedDoc = await prisma.document.create({
             data: {
               userId: job.data.userId,
               type: 'RESUME',
-              title: job.data.originalName,
+              title: uniqueTitle,
               content: result,
               atsScore: result.atsScore,
               jobFitScore: result.jobFitScore
             }
           });
+          // Invalidate resumes cache so dropdowns reflect new resume immediately
+          await safeCacheDel(`resumes:${job.data.userId}`);
           // Append documentId to the result so the frontend can retrieve it
           result.documentId = parsedDoc.id;
           break;

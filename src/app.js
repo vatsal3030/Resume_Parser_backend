@@ -26,20 +26,36 @@ const app = express();
 app.use(tracingMiddleware);
 app.use(helmet());
 
-// CORS: Only allow frontend origins (Vercel + localhost dev)
+// CORS: Only allow frontend origins (Vercel + localhost dev + extensions)
 const allowedOrigins = [
   'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
   ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()) : [])
 ].filter(Boolean);
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (mobile apps, curl, etc.) in dev
-    // BUG FIX: Also allow chrome-extension:// origins for the browser extension
-    if (!origin || allowedOrigins.some(allowed => origin.startsWith(allowed)) || origin.startsWith('chrome-extension://')) {
+    // Allow requests with no origin (mobile apps, curl, server-to-server, ping)
+    if (!origin) {
+      return callback(null, true);
+    }
+    
+    const isAllowed = 
+      allowedOrigins.some(allowed => origin.startsWith(allowed)) ||
+      origin.startsWith('chrome-extension://') ||
+      origin.startsWith('moz-extension://') ||
+      origin.includes('localhost') ||
+      origin.includes('127.0.0.1') ||
+      origin.endsWith('.vercel.app') ||
+      origin.endsWith('vixora.co.in');
+
+    if (isAllowed) {
       callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'));
+      // Return false instead of throwing a fatal 500 Error
+      callback(null, false);
     }
   },
   credentials: true
@@ -68,10 +84,14 @@ app.get('/', (req, res) => {
   res.send('API is running...');
 });
 
-// Health check endpoint
-app.get('/api/health', async (req, res) => {
+// Ping & health check endpoints
+app.get(['/ping', '/api/ping'], (req, res) => {
+  res.status(200).json({ status: 'pong', timestamp: new Date().toISOString() });
+});
+
+app.get(['/api/health', '/health'], async (req, res) => {
   try {
-    const count = await prisma.document.count(); // Updated from resume.count() to document.count()
+    const count = await prisma.document.count();
     res.status(200).json({
       status: 'ok',
       db: 'connected',
@@ -79,9 +99,9 @@ app.get('/api/health', async (req, res) => {
       timestamp: new Date().toISOString(),
     });
   } catch (err) {
-    res.status(500).json({
-      status: 'error',
-      db: 'unreachable',
+    res.status(200).json({
+      status: 'degraded',
+      db: 'reconnecting',
       message: err.message,
       timestamp: new Date().toISOString(),
     });

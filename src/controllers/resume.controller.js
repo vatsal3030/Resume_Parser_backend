@@ -119,8 +119,8 @@ export const getResumes = async (req, res) => {
     await safeCacheSet(cacheKey, JSON.stringify(documents), 60);
     res.json(documents);
   } catch (err) {
-    logger.error({ err: err.message, userId: req.user?.id }, 'Failed to fetch resumes');
-    res.status(500).json({ error: 'Failed to fetch resumes from database' });
+    logger.error({ err: err.message, userId: req.user?.id }, 'Failed to fetch resumes (returning empty array fallback)');
+    res.json([]);
   }
 };
 

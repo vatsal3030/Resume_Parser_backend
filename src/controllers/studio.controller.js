@@ -1,6 +1,7 @@
 import prisma from '../config/db.js';
 import logger from '../config/logger.js';
 import { safeCacheGet, safeCacheSet, safeCacheDel } from '../config/redis.js';
+import { getUniqueResumeTitle } from '../utils/uniqueTitle.js';
 
 /**
  * Studio Controller
@@ -303,10 +304,12 @@ export const createStudioResume = async (req, res) => {
       };
     }
 
+    const uniqueTitle = await getUniqueResumeTitle(req.user.id, title || 'Untitled Resume');
+
     const resume = await prisma.studioResume.create({
       data: {
         userId: req.user.id,
-        title: title || 'Untitled Resume',
+        title: uniqueTitle,
         templateId: validTemplateId,
         resumeData: defaultResumeData,
         sectionOrder: sectionOrder || defaultOrder,
@@ -314,6 +317,7 @@ export const createStudioResume = async (req, res) => {
       },
     });
 
+    await safeCacheDel(`studio:resumes:${req.user.id}`);
     res.status(201).json(resume);
   } catch (error) {
     logger.error({ err: error }, 'Failed to create studio resume');

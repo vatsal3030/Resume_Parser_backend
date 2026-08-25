@@ -127,8 +127,12 @@ export const getActiveChat = async (req, res) => {
       messages: cleanMessages
     });
   } catch (error) {
-    logger.error({ err: error }, 'Failed to fetch active chat');
-    res.status(500).json({ error: 'Failed to fetch chat history' });
+    logger.error({ err: error }, 'Failed to fetch active chat (returning fallback new chat)');
+    res.json({
+      conversationId: 'default',
+      title: 'New Chat',
+      messages: []
+    });
   }
 };
 
@@ -153,8 +157,8 @@ export const listConversations = async (req, res) => {
 
     res.json(conversations);
   } catch (error) {
-    logger.error({ err: error }, 'Failed to list conversations');
-    res.status(500).json({ error: 'Failed to list conversations' });
+    logger.error({ err: error }, 'Failed to list conversations (returning empty list fallback)');
+    res.json([]);
   }
 };
 

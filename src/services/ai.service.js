@@ -91,46 +91,65 @@ ${jobDescription}
 };
 
 export const generateMockInterview = async (resumeText, targetRole, modelId = null) => {
-  const systemInstruction = `You are an expert interviewer who has conducted 10,000+ interviews across all industries and domains. You personalize interviews based on the candidate's actual background from their resume. Output ONLY a raw JSON object.`;
+  const systemInstruction = `You are a world-class executive technical interviewer, hiring manager, and domain specialist who has evaluated 10,000+ candidates for FAANG, Fortune 500, top engineering firms, and high-growth startups across ALL disciplines. You customize interview simulations strictly to the candidate's actual background and target role. Output ONLY a valid JSON object.`;
   const prompt = `
-IMPORTANT: First analyze the candidate's resume to detect their primary domain/field (e.g., Computer Science, Mechanical Engineering, Electrical Engineering, Civil Engineering, MBA, Finance, Marketing, Design, Medical, Law, Data Science, etc.). The interview MUST be tailored to their actual domain, not assumed to be CSE/IT.
+IMPORTANT: First analyze the candidate's resume to detect their primary domain/field (e.g., Computer Science, Mechanical Engineering, Electrical Engineering, Civil Engineering, MBA / Business, Finance, Marketing, UI/UX Design, Medical / Biotech, Law, Data Science, etc.). The interview MUST be tailored to their actual domain, not assumed to be CSE/IT.
 
-Based on the candidate's resume and their target role (${targetRole}), generate a comprehensive 6-round mock interview simulation.
+Based on the candidate's resume and their target role (${targetRole}), generate a comprehensive, highly realistic 5-round mock interview simulation with complete model solutions and learning takeaways.
 
 Return a JSON object with:
 - "detectedDomain": The candidate's primary domain/field detected from their resume
-- "interviewLevel": "Entry" | "Mid" | "Senior" based on experience
-- "rounds": Array of 6 rounds
+- "interviewLevel": "Entry" | "Mid" | "Senior" | "Lead" based on their years and depth of experience
+- "domainOverview": 2-sentence summary of what technical competencies and industry standards this interview will test
+- "rounds": Array of exactly 5 rounds
 
 Each round object must have:
-1. "title": Descriptive round title (e.g., "Round 1: Aptitude & Logical Reasoning")
-2. "type": One of "aptitude", "mcq", "technical", "coding", "project_discussion", "behavioral"
-3. "description": 1-line description of what this round tests
-4. "questions": Array of exactly 5 questions
+1. "title": Descriptive round title (e.g., "Round 1: Aptitude & Quantitative Logic")
+2. "type": One of "aptitude", "mcq", "coding", "project_discussion", "behavioral"
+3. "description": 1-line description of what core competencies this round evaluates
+4. "timeLimit": Total suggested time for this round in minutes
+5. "questions": Array of 2 to 3 high-impact, realistic questions
 
-Round structure:
-- Round 1 (aptitude): Logic puzzles, math reasoning, pattern recognition, probability — universal for all domains
-- Round 2 (mcq): Domain-specific technical MCQs with 4 options each (e.g., CS: OS/DBMS/Networks, Mech: Thermodynamics/Strength of Materials, MBA: Case studies)
-- Round 3 (coding/technical): For tech roles: DSA problems. For non-tech: domain-specific problem-solving (case studies, calculations, design problems)
-- Round 4 (technical): Core subject deep-dive based on their resume skills and domain (system design for senior tech, domain theory for others)
-- Round 5 (project_discussion): Questions about their specific projects mentioned in resume, probing depth of understanding
-- Round 6 (behavioral): HR round with STAR-method situational questions, conflict resolution, leadership, teamwork
+MANDATORY Round structure (all 5 rounds required):
+- Round 1 (aptitude): Logic puzzles, quantitative reasoning, probability, or pattern recognition — universal for all domains
+- Round 2 (mcq): Domain-specific technical MCQs with exactly 4 options each, testing core foundational concepts and best practices
+- Round 3 (coding): For CS/IT/Data: real coding/DSA/system problem. For non-CS: domain-specific structured problem solving (e.g., stress analysis, circuit design, DCF valuation case, marketing attribution)
+- Round 4 (project_discussion): Communication-focused deep-dive into specific projects from their resume — probing architecture, trade-offs, articulation, scalability, and handling tough pushbacks
+- Round 5 (behavioral): HR & Leadership round with STAR-method situational questions — conflict resolution, cross-functional collaboration, ownership, and failure recovery
 
 Each question object must have:
-- "id": Unique string ID (e.g., "r1_q1")
-- "question": The actual question text (be specific and realistic)
+- "id": Unique string ID (e.g., "r1_q1", "r2_q2")
+- "question": The actual question text (be specific, realistic, and challenging)
 - "difficulty": "Easy" | "Medium" | "Hard"
 - "timeMinutes": Suggested time to answer (1-15 minutes)
-- "context": Why this question is being asked / what it tests
-- "options": (Required ONLY for "mcq" type) Array of exactly 4 string options
-- "expectedAnswerGuidance": Detailed key points for a perfect answer (or correct option for MCQ)
+- "context": Why this question is being asked / what competency top hiring managers look for
+- "hints": Array of exactly 2 progressive hints (first hint is a subtle nudge, second is more actionable)
+- "evaluationRubric": Array of 3 concrete criteria an interviewer evaluates for a 10/10 answer (e.g., ["Identifies optimal Big-O bounds", "Handles null/empty edge cases", "Explains trade-offs clearly"])
+- "expectedAnswerGuidance": Detailed key points for a perfect answer
+- "idealSolution": A textbook, complete model solution:
+  - For Aptitude: Complete step-by-step mathematical/logical derivation, shortcut trick, and final answer
+  - For MCQ: Clear breakdown of why the correct option is right AND why each of the 3 distractors is wrong
+  - For Coding: Full, clean production-ready solution code with inline comments, Big-O Time & Space complexity analysis, and edge case breakdown
+  - For Project Discussion: Exemplary STAR framework talking points, technical trade-offs, architecture considerations, and handling tough follow-up pushbacks
+  - For Behavioral: A textbook STAR-method answer tailored specifically to the candidate's actual projects and experience with impactful phrasing
+- "keyTakeaway": 1-2 sentence golden interview tip or industry best practice for this question type
+
+ADDITIONAL FIELDS by round type:
+- For "mcq" type questions ONLY:
+  - "options": Array of exactly 4 string options (plausible distractors that test deep understanding, not trivial)
+  - "correctOption": The exact string of the correct option from the options array
+
+- For "coding" type questions ONLY:
+  - "language": Suggested programming language or "any" (for CS) or "N/A" (for non-CS)
+  - "starterCode": A clean code skeleton or problem template string with comments (empty string if not applicable)
+  - "expectedApproach": Step-by-step approach to solve (algorithm choice, data structures, complexity targets)
 
 CRITICAL RULES:
 1. Questions MUST be personalized to the candidate's actual skills, projects, and experience from their resume
-2. For non-CSE candidates, do NOT ask coding/DSA questions — ask domain-relevant problem-solving instead
-3. MCQ options should have plausible distractors, not obviously wrong answers
-4. Difficulty should progressively increase within each round
-5. Project discussion questions should reference SPECIFIC projects from their resume
+2. For non-CSE candidates, do NOT ask coding/DSA questions — ask domain-relevant structured problem-solving instead
+3. Project discussion questions MUST reference SPECIFIC projects and company/org names from their resume
+4. Behavioral questions should use the STAR format and relate to realistic high-stakes workplace scenarios
+5. Make ideal solutions genuinely educational, insightful, and practical
 
 Resume:
 ${resumeText}
@@ -139,25 +158,36 @@ ${resumeText}
 };
 
 export const gradeMockInterview = async (answers, questions, modelId = null) => {
-  const systemInstruction = `You are a strict but fair technical interviewer grading a mock interview. Output ONLY a raw JSON object.`;
+  const systemInstruction = `You are a strict, fair, and encouraging executive hiring manager and technical bar raiser grading a candidate's mock interview. Provide honest, highly constructive feedback with actionable coaching. Output ONLY a raw JSON object.`;
   const prompt = `
-You are grading a candidate's mock interview. 
-Here are the questions that were asked, along with the expected guidance for full credit:
+You are grading a candidate's mock interview simulation across 5 rounds.
+
+Here are the questions asked, including expected rubrics, contexts, and guidance:
 ${JSON.stringify(questions, null, 2)}
 
-Here are the candidate's answers:
+Here are the candidate's submitted answers:
 ${JSON.stringify(answers, null, 2)}
 
-Evaluate their performance. Return a JSON object with:
-1. "totalScore": A number out of 100.
-2. "feedbackSummary": A 3-4 sentence general feedback summary.
-3. "rounds": An array corresponding to the rounds they completed. Each round should have:
+Evaluate their performance thoroughly. Return a JSON object with:
+1. "totalScore": A number out of 100 representing their overall interview performance.
+2. "hiringRecommendation": One of "Strong Hire" | "Hire" | "Leaning Hire" | "Needs Improvement"
+3. "feedbackSummary": A 3-4 sentence comprehensive executive summary of their performance, readiness, and communication clarity.
+4. "categoryBreakdown": Object with numeric scores (0-100) for:
+   - "technicalAccuracy": Score out of 100
+   - "problemSolving": Score out of 100
+   - "communicationClarity": Score out of 100
+   - "behavioralFit": Score out of 100
+5. "strengths": Array of top 3 demonstrated strengths during the interview.
+6. "weaknesses": Array of top 3 areas where they fell short or need immediate revision.
+7. "actionPlan": Array of 3 actionable, specific steps the candidate must take to ace the real interview.
+8. "rounds": An array corresponding to the rounds evaluated. Each round should have:
    - "title": Round title
    - "score": Score out of 100 for this round
    - "questionFeedback": An array of objects for each question in the round containing:
       - "questionId": The ID of the question
       - "score": Score out of 10 (0-10)
-      - "feedback": Specific feedback on their answer. What was good, what was missing.
+      - "feedback": Specific, personalized feedback on what was strong and what was missing in their response
+      - "keyMissingPoint": 1 critical point or keyword they should have included
 `;
   return await generateAI({ prompt, systemInstruction, responseFormat: 'json', modelId });
 };

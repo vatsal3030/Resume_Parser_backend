@@ -96,41 +96,63 @@ export const getUserDetails = async (req, res) => {
 export const updateProfile = async (req, res) => {
   try {
     const userId = req.user.id;
+    
+    // 1. Ensure User exists
+    await prisma.user.upsert({
+      where: { id: userId },
+      update: {},
+      create: {
+        id: userId,
+        email: req.user.email || 'unknown@example.com'
+      }
+    });
+
+    // 2. Extract ONLY valid scalar fields from Profile model to avoid Prisma unknown field / relation errors
     const { 
       username, phone, country, city, bio,
       targetRole, experienceLevel, field, salaryExpectation, skills,
       school, branch, passingYear, graduationYear,
-      socialLinks, achievements,
+      socialLinks, projectLinks, certificates, achievements,
       codingExperience, preferredLanguages, careerGoals,
       avatarUrl
     } = req.body;
 
+    const profileData = {};
+    if (username !== undefined) profileData.username = username || null;
+    if (phone !== undefined) profileData.phone = phone || null;
+    if (country !== undefined) profileData.country = country || null;
+    if (city !== undefined) profileData.city = city || null;
+    if (bio !== undefined) profileData.bio = bio || null;
+    if (targetRole !== undefined) profileData.targetRole = targetRole || null;
+    if (experienceLevel !== undefined) profileData.experienceLevel = experienceLevel || null;
+    if (field !== undefined) profileData.field = field || null;
+    if (salaryExpectation !== undefined) profileData.salaryExpectation = salaryExpectation || null;
+    if (skills !== undefined) profileData.skills = Array.isArray(skills) ? skills : [];
+    if (school !== undefined) profileData.school = school || null;
+    if (branch !== undefined) profileData.branch = branch || null;
+    if (passingYear !== undefined) profileData.passingYear = passingYear || null;
+    if (graduationYear !== undefined) profileData.graduationYear = graduationYear ? parseInt(graduationYear, 10) : null;
+    if (socialLinks !== undefined) profileData.socialLinks = socialLinks || {};
+    if (projectLinks !== undefined) profileData.projectLinks = projectLinks || [];
+    if (certificates !== undefined) profileData.certificates = certificates || [];
+    if (achievements !== undefined) profileData.achievements = Array.isArray(achievements) ? achievements : [];
+    if (codingExperience !== undefined) profileData.codingExperience = codingExperience || null;
+    if (preferredLanguages !== undefined) profileData.preferredLanguages = Array.isArray(preferredLanguages) ? preferredLanguages : [];
+    if (careerGoals !== undefined) profileData.careerGoals = careerGoals || null;
+    if (avatarUrl !== undefined) profileData.avatarUrl = avatarUrl || null;
+
     const profile = await prisma.profile.upsert({
       where: { userId },
-      update: {
-        username, phone, country, city, bio,
-        targetRole, experienceLevel, field, salaryExpectation, skills,
-        school, branch, passingYear, 
-        graduationYear: graduationYear ? parseInt(graduationYear) : null,
-        socialLinks, achievements,
-        codingExperience, preferredLanguages, careerGoals,
-        avatarUrl
-      },
+      update: profileData,
       create: {
         userId,
-        username, phone, country, city, bio,
-        targetRole, experienceLevel, field, salaryExpectation, skills,
-        school, branch, passingYear, 
-        graduationYear: graduationYear ? parseInt(graduationYear) : null,
-        socialLinks, achievements,
-        codingExperience, preferredLanguages, careerGoals,
-        avatarUrl
+        ...profileData
       }
     });
 
     res.status(200).json({ message: 'Profile updated successfully', profile });
   } catch (err) {
-    logger.error({ err }, 'Update Profile Error');
+    logger.error({ err: err.message, userId: req.user?.id }, 'Update Profile Error');
     res.status(500).json({ error: 'Failed to update profile', details: err.message });
   }
 };
